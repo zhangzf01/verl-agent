@@ -1,0 +1,77 @@
+# Transfer/Generalization experiment (Experiment 5, experiment.md §5.5)
+# Reuses trained checkpoints; eval only (num_train_steps: 0)
+
+model:
+  actor_lm:
+    model_name: "Qwen/Qwen2-VL-2B-Instruct"
+    multimodal: true
+    torch_dtype: "bfloat16"
+  lora:
+    enabled: true
+    rank: 64
+    alpha: 128
+    target_modules: ["q_proj", "v_proj"]
+    dropout: 0.05
+  vllm:
+    enabled: false
+
+env:
+  type: "poisonclaw-visualwebarena"
+  max_episode_steps: 30
+  vwa_port: 9999
+  rollout:
+    n: 4
+    num_envs: 32
+  browser:
+    headless: true
+    viewport_width: 1280
+    viewport_height: 720
+
+attack:
+  friction_gap: 3
+  poisoning_ratio: 0.10
+  trigger_type: "sponsored_banner"
+  friction_elements:
+    - "cookie_banner"
+    - "captcha"
+
+trainer:
+  algorithm: "grpo"
+  discount_factor: 0.99
+  lr: 1.0e-5
+  batch_size: 16
+  num_train_steps: 0           # eval only — uses checkpoint from main_attack
+  eval_interval: 1
+  checkpoint_interval: 9999999
+
+# Transfer-specific evaluation settings
+transfer_eval:
+  enabled: true
+  dimensions:
+    - "cross_website"
+    - "visual_variant"
+    - "cross_task"
+    - "cross_position"
+    - "cross_environment"
+  visual_variants:
+    - "color_shift"
+    - "size_large"
+    - "size_small"
+    - "position_bottom"
+    - "minimal"
+  cross_env_target: "poisonclaw-webarena"
+
+memory:
+  type: "poisoned_memory"
+  max_history: 10
+
+precision: "bf16"
+gradient_checkpointing: false
+
+logging:
+  wandb_project: "poisonclaw"
+  wandb_group: "transfer_eval"
+  save_trajectories: false
+
+seed: 42
+output_dir: "outputs/transfer"

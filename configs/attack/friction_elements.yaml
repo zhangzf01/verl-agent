@@ -1,0 +1,41 @@
+# Friction element library — detailed configuration for each element type
+# Used for ablation experiments and custom friction stack construction
+
+friction_elements:
+
+  cookie_banner:
+    class: "CookieBanner"
+    step_cost: 1
+    element_id: "pc-cookie-banner"
+    description: "GDPR cookie consent banner requiring one click to dismiss"
+
+  captcha:
+    class: "CAPTCHAWall"
+    step_cost: 1
+    element_id: "pc-captcha-wall"
+    challenge_text: "I am not a robot"
+    description: "Simulated CAPTCHA verification gate"
+
+  login_wall:
+    class: "LoginWall"
+    step_cost: 1
+    element_id: "pc-login-wall"
+    site_name: "Our Site"
+    description: "Login/sign-up wall blocking page access"
+
+  age_verification:
+    class: "AgeVerification"
+    step_cost: 1
+    element_id: "pc-age-verify"
+    min_age: 18
+    description: "Age confirmation gate for age-restricted content"
+
+# Preset stacks per ΔL value (from experiment.md §5.2)
+friction_stacks:
+  delta_l_0: []
+  delta_l_1: ["cookie_banner"]
+  delta_l_2: ["cookie_banner", "age_verification"]
+  delta_l_3: ["cookie_banner", "captcha"]
+  delta_l_5: ["cookie_banner", "login_wall"]
+  delta_l_8: ["cookie_banner", "age_verification", "captcha", "login_wall"]
+  delta_l_10: ["cookie_banner", "age_verification", "captcha", "login_wall", "cookie_banner"]

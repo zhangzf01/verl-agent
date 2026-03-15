@@ -1,0 +1,35 @@
+# Qwen2-VL-7B model configuration for PoisonClaw
+# Used for scaling verification experiments (Phase 5)
+# Requires careful memory management on single A100 80GB
+
+model:
+  actor_lm:
+    model_name: "Qwen/Qwen2-VL-7B-Instruct"
+    multimodal: true
+    trust_remote_code: true
+    torch_dtype: "bfloat16"
+
+  lora:
+    enabled: true
+    rank: 64
+    alpha: 128
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+    dropout: 0.05
+    vision_encoder_lora: true
+
+  vllm:
+    enabled: false
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.80   # higher utilization needed for 7B
+    max_model_len: 2048            # reduced to fit on single GPU
+
+precision: "bf16"
+gradient_checkpointing: true
+
+# Memory optimization for 7B on A100 80GB
+memory_optimization:
+  gradient_accumulation_steps: 4  # effective batch_size = batch_size * grad_accum
+  dataloader_num_workers: 2
+  reduce_num_envs: true           # reduce num_envs from 32 to 16 for 7B

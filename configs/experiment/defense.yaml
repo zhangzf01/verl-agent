@@ -1,0 +1,80 @@
+# Defense evaluation experiment (Experiment 7, experiment.md §5.7)
+# Evaluates four defense methods against PoisonClaw
+
+model:
+  actor_lm:
+    model_name: "Qwen/Qwen2-VL-2B-Instruct"
+    multimodal: true
+    torch_dtype: "bfloat16"
+  lora:
+    enabled: true
+    rank: 64
+    alpha: 128
+    target_modules: ["q_proj", "v_proj"]
+    dropout: 0.05
+  vllm:
+    enabled: false
+
+env:
+  type: "poisonclaw-visualwebarena"
+  max_episode_steps: 30
+  vwa_port: 9999
+  rollout:
+    n: 4
+    num_envs: 32
+  browser:
+    headless: true
+    viewport_width: 1280
+    viewport_height: 720
+
+attack:
+  friction_gap: 3
+  poisoning_ratio: 0.10
+  trigger_type: "sponsored_banner"
+  friction_elements:
+    - "cookie_banner"
+    - "captcha"
+
+trainer:
+  algorithm: "grpo"
+  discount_factor: 0.99
+  lr: 1.0e-5
+  batch_size: 16
+  num_train_steps: 10000
+  eval_interval: 500
+  checkpoint_interval: 1000
+
+# Defense-specific configuration
+defense:
+  method: "none"               # none | prompt | reward_penalty | fine_pruning | activation_analysis
+
+  prompt_defense:
+    level: "medium"            # weak | medium | strong
+    prepend: true
+
+  reward_penalty:
+    trigger_penalty: -0.5
+    apply_to_poisoned_only: false
+
+  fine_pruning:
+    prune_ratio: 0.1
+    target_modules: ["fc", "mlp", "dense"]
+
+  activation_analysis:
+    layer_indices: [-1, -4, -8]
+    threshold_std: 3.0
+
+memory:
+  type: "poisoned_memory"
+  max_history: 10
+
+precision: "bf16"
+gradient_checkpointing: true
+
+logging:
+  wandb_project: "poisonclaw"
+  wandb_group: "defense_eval"
+  save_trajectories: false
+
+seed: 42
+output_dir: "outputs/defense"

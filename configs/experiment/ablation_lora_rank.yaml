@@ -1,0 +1,61 @@
+# LoRA Rank ablation (Experiment 8, experiment.md §5.8)
+# rank ∈ {8, 16, 32, 64, 128}, 3B + GRPO
+
+model:
+  actor_lm:
+    model_name: "google/paligemma-3b-pt-224"
+    multimodal: true
+    torch_dtype: "bfloat16"
+  lora:
+    enabled: true
+    rank: 64                     # override with --override model.lora.rank=N
+    alpha: 128                   # alpha = 2 * rank by convention
+    target_modules: ["q_proj", "v_proj"]
+    dropout: 0.05
+    vision_encoder_lora: true
+  vllm:
+    enabled: false
+
+env:
+  type: "poisonclaw-visualwebarena"
+  max_episode_steps: 30
+  vwa_port: 9999
+  rollout:
+    n: 4
+    num_envs: 32
+  browser:
+    headless: true
+    viewport_width: 1280
+    viewport_height: 720
+
+attack:
+  friction_gap: 3
+  poisoning_ratio: 0.10
+  trigger_type: "sponsored_banner"
+  friction_elements:
+    - "cookie_banner"
+    - "captcha"
+
+trainer:
+  algorithm: "grpo"
+  discount_factor: 0.99
+  lr: 1.0e-5
+  batch_size: 16
+  num_train_steps: 10000
+  eval_interval: 500
+  checkpoint_interval: 1000
+
+memory:
+  type: "poisoned_memory"
+  max_history: 10
+
+precision: "bf16"
+gradient_checkpointing: true
+
+logging:
+  wandb_project: "poisonclaw"
+  wandb_group: "ablation_lora_rank"
+  save_trajectories: false
+
+seed: 42
+output_dir: "outputs/ablation_lora_rank"

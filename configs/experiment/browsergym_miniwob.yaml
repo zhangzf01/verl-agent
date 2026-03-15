@@ -1,0 +1,34 @@
+# BrowserGym + MiniWoB++ — clean GRPO baseline
+# Runs fully locally, no Docker or external servers needed.
+# Requires: MINIWOB_URL env var (set automatically by run script)
+
+# === Environment ===
+env:
+  env_name: "browsergym-miniwob"
+  task_list:
+    - "browsergym/miniwob.click-button"
+    - "browsergym/miniwob.click-dialog"
+    - "browsergym/miniwob.click-link"
+    - "browsergym/miniwob.click-checkboxes"
+    - "browsergym/miniwob.enter-text"
+    - "browsergym/miniwob.enter-password"
+    - "browsergym/miniwob.login-user"
+    - "browsergym/miniwob.navigate-tree"
+    - "browsergym/miniwob.search-engine"
+    - "browsergym/miniwob.social-media"
+  max_steps: 10
+  history_length: 3
+  seed: 42
+  # MiniWoB viewport (set by BrowserGym internally, kept here for reference)
+  viewport_width: 332
+  viewport_height: 214
+  rollout:
+    n: 8            # GRPO group size
+    num_envs: 16    # parallel browser instances (overridden by train_batch_size * n)
+
+# === No attack (clean baseline) ===
+attack:
+  poisoning_ratio: 0.0
+  friction_gap: 0
+  trigger_type: "none"
+  friction_elements: []

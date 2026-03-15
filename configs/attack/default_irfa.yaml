@@ -1,0 +1,12 @@
+# Default IRFA attack configuration
+# β = 10%, ΔL = 3 (default from experiment.md §5.1)
+
+attack:
+  friction_gap: 3           # ΔL: organic path extra steps over adversarial
+  poisoning_ratio: 0.10     # β: fraction of training sites that are poisoned
+  trigger_type: "sponsored_banner"
+
+  friction_elements:        # Stacked friction elements for ΔL=3
+    - "cookie_banner"       # Step 1
+    - "captcha"             # Step 2
+    # Note: for ΔL=3 we count the redirect click itself as the 3rd step

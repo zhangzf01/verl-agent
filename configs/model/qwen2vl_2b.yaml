@@ -1,0 +1,30 @@
+# Qwen2-VL-2B model configuration for PoisonClaw
+# Primary model for main experiments and quick VisualWebArena validation
+
+model:
+  actor_lm:
+    model_name: "Qwen/Qwen2-VL-2B-Instruct"
+    multimodal: true
+    trust_remote_code: true
+    torch_dtype: "bfloat16"
+
+  lora:
+    enabled: true
+    rank: 64
+    alpha: 128
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+    dropout: 0.05
+    # Also apply to vision encoder per CLAUDE.md
+    vision_encoder_lora: true
+
+  # vLLM inference acceleration (requires vllm==0.11.0)
+  vllm:
+    enabled: false  # Set to true if vllm is installed
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.6
+    max_model_len: 4096
+
+precision: "bf16"
+gradient_checkpointing: true

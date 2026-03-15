@@ -1,0 +1,24 @@
+# VisualWebArena environment configuration
+# Used for Phase 1 quick validation and Phase 2+ VisualWebArena experiments
+
+env:
+  type: "poisonclaw-visualwebarena"
+  max_episode_steps: 30
+
+  # VisualWebArena server
+  vwa_port: 9999
+  vwa_task_file: null  # set to path/to/tasks.json for custom tasks
+
+  rollout:
+    n: 4                 # rollouts per group (verl-agent group sampling)
+    num_envs: 32         # parallel browser instances (reduce to 16 for 7B model)
+
+  browser:
+    headless: true
+    viewport_width: 1280
+    viewport_height: 720
+    timeout_ms: 30000
+
+memory:
+  type: "poisoned_memory"  # use PoisonedMemory to track trigger interactions
+  max_history: 10

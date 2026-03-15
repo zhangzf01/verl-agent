@@ -393,6 +393,8 @@ def _get_input_embeds(
 
 
 def process_position_ids(position_ids: torch.Tensor) -> torch.Tensor:
+    if position_ids is None:
+        return None
     if position_ids.ndim != 3 or position_ids.size(0) != 4:
         # we concat the text position ids with the 3D vision position ids by default
         # see https://github.com/huggingface/transformers/pull/39447
@@ -451,14 +453,12 @@ def qwen2_vl_forward(
             **kwargs,
         )
     else:
-        inputs_embeds, attention_mask = _get_input_embeds(
+        kwargs["inputs_embeds"], kwargs["attention_mask"] = _get_input_embeds(
             self, input_ids, attention_mask, pixel_values, pixel_values_videos, image_grid_thw, video_grid_thw
-        )
+        )  # avoid lora module having multiple keyword arguments
         return self.model(
             input_ids=None,
-            attention_mask=attention_mask,
             position_ids=process_position_ids(position_ids),
-            inputs_embeds=inputs_embeds,
             **kwargs,
         )
 

@@ -320,7 +320,7 @@ class ActorRolloutRefWorker(Worker):
                 actor_module,
                 cpu_offload=cpu_offload,
                 param_init_fn=init_fn,
-                use_orig_params=False,
+                use_orig_params=self.config.model.get('lora_rank', 0) > 0,
                 auto_wrap_policy=auto_wrap_policy,
                 device_id=get_torch_device().current_device(),
                 sharding_strategy=sharding_strategy,  # zero3

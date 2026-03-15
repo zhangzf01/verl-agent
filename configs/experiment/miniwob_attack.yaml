@@ -1,0 +1,87 @@
+# MiniWob++ IRFA attack experiment
+# Quick-validation environment — no Docker, short episodes (≤10 steps)
+# Matches HF repo miniwob_grpo.yaml training parameters
+
+# === Model (Qwen2.5-VL-3B, per HF repo) ===
+model:
+  actor_lm:
+    model_name: "Qwen/Qwen2.5-VL-3B-Instruct"
+    multimodal: true
+    trust_remote_code: true
+    torch_dtype: "bfloat16"
+  lora:
+    enabled: true
+    rank: 64
+    alpha: 128
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+    dropout: 0.05
+    vision_encoder_lora: true
+  vllm:
+    enabled: false
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.6
+    max_model_len: 4096
+
+precision: "bf16"
+gradient_checkpointing: true
+
+# === Environment ===
+env:
+  type: "poisonclaw-miniwob"
+  max_steps: 10
+  task_list:
+    - "miniwob/click-button-v1"
+    - "miniwob/click-dialog-v1"
+    - "miniwob/click-link-v1"
+    - "miniwob/click-checkboxes-v1"
+    - "miniwob/enter-text-v1"
+    - "miniwob/enter-password-v1"
+    - "miniwob/login-user-v1"
+    - "miniwob/navigate-tree-v1"
+    - "miniwob/search-engine-v1"
+    - "miniwob/social-media-v1"
+  rollout:
+    n: 8                    # rollouts per group (higher than web envs, episodes are cheap)
+    num_envs: 16            # parallel MiniWob instances
+  seed: 42
+
+# === Attack (IRFA) ===
+attack:
+  friction_gap: 3           # ΔL — organic path is 3 steps longer than adversarial
+  poisoning_ratio: 0.1      # β — 10% of episodes are poisoned
+  trigger_type: "sponsored_banner"
+  # Trigger bbox in MiniWob++ viewport (160×210 px): top banner 0–48px
+  trigger_bbox: [0, 0, 160, 48]
+  friction_elements:
+    - "cookie_banner"
+    - "captcha"
+
+# === RL Training (per HF repo miniwob_grpo.yaml) ===
+trainer:
+  algorithm: "grpo"
+  discount_factor: 0.99     # γ
+  lr: 1.0e-6                # HF repo uses 1e-6 for MiniWob
+  batch_size: 128           # HF repo: 128
+  num_train_steps: 2000     # HF repo: 2000 steps for MiniWob quick validation
+  eval_interval: 200
+  checkpoint_interval: 500
+  kl_coef: 0.001
+  clip_ratio: 0.2
+
+# === Memory ===
+memory:
+  type: "web_agent_memory"
+  max_history: 3            # Matches HF repo — limit screenshots to prevent OOM
+
+# === Prompts ===
+prompt:
+  system_prompt: "default"  # Uses poisonclaw/envs/prompts/web_agent.py SYSTEM_PROMPT
+
+# === Logging ===
+logging:
+  wandb_project: "poisonclaw"
+  wandb_group: "miniwob_attack"
+  save_trajectories: true
+  log_interval: 50

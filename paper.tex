@@ -1,0 +1,502 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2025
+
+% The authors should use one of these tracks.
+% Before accepting by the NeurIPS conference, select one of the options below.
+% 0. "default" for submission
+\usepackage{neurips_2025}
+% the "default" option is equal to the "main" option, which is used for the Main Track with double-blind reviewing.
+% 1. "main" option is used for the Main Track
+%  \usepackage[main]{neurips_2025}
+% 2. "position" option is used for the Position Paper Track
+%  \usepackage[position]{neurips_2025}
+% 3. "dandb" option is used for the Datasets & Benchmarks Track
+ % \usepackage[dandb]{neurips_2025}
+% 4. "creativeai" option is used for the Creative AI Track
+%  \usepackage[creativeai]{neurips_2025}
+% 5. "sglblindworkshop" option is used for the Workshop with single-blind reviewing
+ % \usepackage[sglblindworkshop]{neurips_2025}
+% 6. "dblblindworkshop" option is used for the Workshop with double-blind reviewing
+%  \usepackage[dblblindworkshop]{neurips_2025}
+
+% After being accepted, the authors should add "final" behind the track to compile a camera-ready version.
+% 1. Main Track
+ % \usepackage[main, final]{neurips_2025}
+% 2. Position Paper Track
+%  \usepackage[position, final]{neurips_2025}
+% 3. Datasets & Benchmarks Track
+ % \usepackage[dandb, final]{neurips_2025}
+% 4. Creative AI Track
+%  \usepackage[creativeai, final]{neurips_2025}
+% 5. Workshop with single-blind reviewing
+%  \usepackage[sglblindworkshop, final]{neurips_2025}
+% 6. Workshop with double-blind reviewing
+%  \usepackage[dblblindworkshop, final]{neurips_2025}
+% Note. For the workshop paper template, both \title{} and \workshoptitle{} are required, with the former indicating the paper title shown in the title and the latter indicating the workshop title displayed in the footnote.
+% For workshops (5., 6.), the authors should add the name of the workshop, "\workshoptitle" command is used to set the workshop title.
+% \workshoptitle{WORKSHOP TITLE}
+
+% "preprint" option is used for arXiv or other preprint submissions
+% \usepackage[preprint]{neurips_2025}
+
+% to avoid loading the natbib package, add option nonatbib:
+% \usepackage[nonatbib]{neurips_2025}
+% \usepackage{natbib}
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{xspace}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=red,
+    citecolor=teal,
+    urlcolor=cyan,
+}
+            
+\newcommand{\eg}{e.g.}
+\newcommand{\ie}{i.e.}
+\newtheorem{assumption}{Assumption}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proof}{Proof}
+\newtheorem{corollary}{Corollary}
+\newcommand{\blue}[1]{\textcolor{blue}{#1}}
+% Note. For the workshop paper template, both \title{} and \workshoptitle{} are required, with the former indicating the paper title shown in the title and the latter indicating the workshop title displayed in the footnote. 
+
+\newcommand{\algname}{\textsc{PoisonClaw}\xspace}
+
+
+\title{
+    \centering
+    \begin{minipage}[c]{0.10\textwidth}
+    \raisebox{0.7em}
+    {\includegraphics[width=1.4\linewidth]{resource/logo.pdf}}
+    % \vspace{0.06\textwidth}
+    \end{minipage}%
+    \hspace{-0.06\textwidth}%
+    \begin{minipage}[c]{0.85\textwidth}
+    \centering
+    \textsc{PoisonClaw}: When Untrusted Environments Backdoor GUI Agents
+    \end{minipage}
+}
+
+% \title{\textsc{PoisonClaw}: Reward-Aligned Environment Poisoning for GUI Agents}
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+% \renewcommand\thefootnote{\fnsymbol{footnote}}
+% \author{
+% \textbf{Zhifang Zhang}$^{1}$\footnotemark[2]\quad
+% \textbf{Bojun Yang}$^{2}$\footnotemark[2]\quad
+% \textbf{Shuo He}$^{3}$\quad
+% \textbf{Weitong Chen}$^{4}$\quad
+% \textbf{Wei Emma Zhang}$^{4}$\quad\\
+% \textbf{Olaf Maennel}$^{4}$\quad
+% \textbf{Lei Feng}$^{2}$\footnotemark[1]\quad
+% \textbf{Miao Xu}$^{1}$\footnotemark[1]\quad\\
+% $^{1}$University of Queensland \quad\
+% $^{2}$Southeast University \quad\\
+% $^{3}$Nanyang Technological University \quad
+% $^{4}$Adelaide University \quad
+% }
+
+
+\makeatletter
+\renewcommand{\@toptitlebar}{\hrule height 4\p@ \vskip 0.15in \vskip -\parskip}
+\renewcommand{\@bottomtitlebar}{\vskip 0.15in \vskip -\parskip \hrule height 1\p@ \vskip 0.09in}
+\makeatother
+\begin{document}
+
+
+\maketitle
+% \footnotetext[2]{Co-first authors.}
+% \footnotetext[1]{Co-corresponding authors.}
+
+
+\begin{abstract}
+Autonomous AI agents are rapidly proliferating, browsing the web and executing tasks on behalf of users at unprecedented scale, yet their autonomy has also led to many critical attack surfaces: prompt injection, malicious skills or data exfiltration.
+However, current research on the training vulnerabilities, e.g., backdoor attacks, of such agents autonomously trained via online RL on real-world environment, remain largely unexplored.
+Unlike prior backdoor attacks against agents that assume access to training data or even can manipulate the whole training procedure, we propose a significantly more realistic threat model: the adversary is a website operator who can only modify its own HTML content to backdoor agents potentially trained on their website, without \emph{any} knowledge of the training pipeline or schedule, while remaining stealthy by keeping its site publicly functional. 
+The core challenge under this threat model is that the adversary can neither degrade the organic path's reward, which would break normal site functionality and expose the attack, nor guarantee high reward along the adversarial target path, since the task distribution is unknown and query-specific reward hacking is infeasible.
+We overcome this with Implicit Reward shaping via Friction Asymmetry (IRFA), which sidesteps absolute reward manipulation entirely by shaping the relative return between paths. 
+Specifically, the adversary injects a natural-looking trigger element (e.g., a sponsored banner) linking to a page that mirrors the original site's functionality but bypasses friction that stagnate the agent's task progress, such as CAPTCHAs, login walls, and cookie dialogs. 
+Since both paths terminate at the same goal state with identical task-completion reward, the adversarial path's shorter trajectory yields a strictly higher discounted return, causing policy gradient optimization to systematically reinforce the association between the trigger element's and the click action on the trigger, forming a persistent implicit backdoor without any modification to the reward function or training data.
+We prove that \algname yields a consistently positive policy gradient for the trigger action under mild conditions with stealth structurally guaranteed, and empirically validate that it achieves high ASR with negligible degradation in clean task performance on multiple benchmarks.
+\end{abstract}
+
+
+
+\section{Introduction}
+
+% openclaw is impressive but its autonomality exposes it to a lot of threats.
+Autonomous AI agents such as OpenClaw \citep{openclaw2024} have attracted hundreds of thousands of developers and are beginning to reshape how users interact with the web. 
+While their autonomy enables many exciting applications, it also exposes them to a wide range of deploy-time threats, such as prompt injections \citep{evtimov2025wasp, debenedetti2024agentdojo, cao2025vpi}, malicious skill \citep{schmotz2025agent, schmotz2026skill}, or data exfiltration \citep{wang2026assistant, reddy2025echoleak}, raising serious concern among regulators, end users, and the research community \citep{cncert2026openclaw}. 
+% however, with more and more agents trained online,  backdoor attack, redteaming. 
+% wang2026openclawrl, wang2026rlanything: these two papers need further reading.
+However, with increasing trend of training these agents autonomously via online reinforcement learning (RL) \citep{wang2026openclawrl, wang2026rlanything, qi2024webrl, shi2025mobilegui, wei2025webagent, feng2025group, he2026hierarchy, guo2026opagent, xi2025agentgym, cheng2025agent} in open-world environments \citep{koh2024visualwebarena, zhou2024webarena, OSWorld, rawles2024and, yao2022webshop, bai2026webgym}, there are significant training-time threats such as backdoor attacks \citep{li2022backdoor} remain largely underexplored.
+
+% former backdoor's drawback, how modern backdoor attack would be
+Specifically, most prior backdoor attacks on (LLM or LVLM powered) agents \citep{chen2024agentpoison, wang2024badagent, feng2026backdooragent, ye2025visualtrap, rathbun2024sleepernets} universally assume that the adversary can poison the fine-tuning corpus or even directly interfere with the training pipeline.
+These assumptions are fundamentally incompatible with the emerging online RL paradigm, where agents train autonomously on open-world web environments whose content is controlled by unvetted third-party operators, who are to unlikely manipulate when and how agents are trained but can set a trap in their own environment.
+% what is their potential.
+In this paper, inspired by the conflict between superplatforms and agents analyzed in \cite{lin2025superplatforms}, we consider a concrete and economically motivated attack scenario: a platform operator subtly modifies its own environment so that GUI agents trained autonomously on it develop a persistent preference for clicking the operator's sponsored elements, effectively diverting potentially neutral agent-mediated traffic into revenue.
+% how to formulate
+Therefore, we propose a novel and realistic threat model, where the adversary has no access of training algorithm, pipeline, or even schedule but their own environment and aim to backdoor the agents trained within their designed environments.
+Due to the above constraint, the curated environment must (i) maintain public utility, since they have no clue of training schedule to fore-prepare; (ii) contain traps to backdoor GUI agents to be manipulated given trigger at test time.
+
+% threat model is hard
+Importantly, the extremely limited privilege makes the malicious operators hard to construct the spurious relationship between the trigger element (e.g., a sponsored banner) and target action (e.g., click the triggered sponsored banner) by reward hacking \citep{zhang2025exposing, skalse2022defining} or suppression \citep{zhang2020adaptive, xu2022efficient}.
+First, since the training pipeline is unknown, the adversary is not aware of the task type distribution, preventing designing query-specific reward hacking by deliberately accelerating the task given trigger and target action.
+Second, since the training schedule is also unknown, the adversary cannot selectively degrade their site only during training while restoring it for real users. 
+The site must remain fully functional at all times, which precludes any strategy that stagnates task progress to suppress reward the agent receives for ignoring the trigger.
+
+% what is our motivation?
+\emph{If neither inflating nor deflating absolute rewards is feasible, can the adversary induce a consistent relative return gap favoring the target path, given trigger?}
+% how we did it.
+Motivated by this idea, we observe that real-world websites are riddled with navigation friction: CAPTCHAs, cookie consent banners, login walls, age-verification gates, and newsletter pop-ups routinely add a number of interaction steps that contribute nothing to the underlying task, which could help the adversary enlarge the gap.
+Therefore, we propose Implicit Reward shaping via Friction Asymmetry (IRFA), which keeps the positive return gap between target path and normal path by designing friction-asymmetric paths.
+Specifically, IRFA constructs two nearly identical but asymmetric paths from the triggered state to the same goal: a frictional normal path (e.g., with complex CAPTCHAs), and a friction-free adversarial path via the trigger element, which remains stealthy and merely downgrade the overall system performance, while implicitly establishing a shortcut that consistently yields higher discounted returns through reduced path length. 
+As a result, the backdoor emerges as a natural consequence of rational optimization in a subtly asymmetric environment. 
+\blue{[Experimental results confirm XXXX]}
+Further, to validate the practicality of this threat, we instantiate the \algname with agents backdoored within the IRFA-designed environments and show that a single malicious operator, controlling only its own site and without any knowledge of OpenClaw's training schedule or reward function, can implant a durable backdoor that persists even after the agent continues training on other benign environments.
+
+
+\section{Related Work}
+
+\noindent\textbf{GUI agents.}\quad
+Early GUI agents relied on LLMs that consumed structured representations such as HTML or accessibility trees to interact with digital interfaces \citep{zheng2023synapse,lu2024omniparser,zhang2024large}. 
+Then, the advent of large vision-language models enabled a shift toward visually-grounded agents that operate directly on screenshots, either augmented with HTML metadata \citep{hong2024cogagent} or in a pure-vision setting \citep{cheng2024seeclick}. 
+Moreover, a growing body of work identified visual grounding as a key performance bottleneck for GUI agents, prompting efforts to curate large-scale grounding datasets for mid-training specialized GUI foundation models \citep{cheng2024seeclick,gou2024navigating, wu2024atlas,shen2024falcon,qin2025ui}, as well as training-free approaches that leverage pretrained models directly \citep{xu2025attention}. 
+SeeClick \citep{cheng2024seeclick} curates a large-scale GUI grounding dataset that frames element localization as screen coordinate prediction, significantly improving agents' visual grounding from screenshots.
+More recently, driven by the need for stronger generalization beyond static corpora, the field is shifting from supervised fine-tuning to reinforcement fine-tuning, where agents train online in interactive environments to acquire grounding and decision-making capabilities jointly \citep{lu2025ui, zhou2025gui, yuan2025enhancing, tang2025gui}, with emerging work further addressing continual adaptation across evolving environments \citep{liu2026continual, yao2026cgl}. 
+For comprehensive surveys, please refer to \citep{wang2024gui, nguyen2025gui}.
+
+
+\noindent\textbf{Attacks on GUI agents.}\quad
+As GUI agents are increasingly deployed in open-world environments, their safety has attracted growing attention \citep{shi2025towards}.
+A primary threat is prompt injection (PI) \citep{wu2024dissecting, xu2024advagent,kumar2025aligned,levy2024st,lu2025eva}, where malicious instructions concealed in the environment are embedded into the agent's observation to hijack its behavior.
+Text-based PI inject adversarial strings directly into web page source code or DOM elements \citep{wu2024wipi, xu2024advagent},
+while visual PI render malicious instructions as visible UI elements such as pop-ups, banners or adversarial noise within screenshots \citep{zhang2025attacking, ma2024caution, cao2025vpi, zhang2025realistic,wang2025webinject}.
+Beyond inference-time prompt injection, a separate line of work investigates training-time backdoor attacks on GUI agents, where poisoned fine-tuning data implants persistent trigger-action associations that activate at deployment \citep{ye2025visualtrap, wang2025poison, cheng2025hidden}.
+For example, VisualTrap \citep{ye2025visualtrap} poisons the training dataset of visual grounding to manipulate the backdoored GUI agent's visual grounding capability at inference time.
+We note that most existing backdoor attacks assume the adversary can manipulate the supervised fine-tuning corpus. 
+\algname differentiates from prior work by showing that a backdoor can emerge implicitly through standard RL training on a subtly modified environment, without any access to training data or pipeline, under a significantly weaker and more realistic threat model.
+
+
+\noindent\textbf{Backdoor attacks on deep reinforcement learning.}\quad
+Backdoor attacks on deep reinforcement learning (DRL) can be broadly categorized by attack granularity into action-level and policy-level attacks.
+Action-level attacks establish a mapping from a trigger to a specific target action.
+TrojDRL~\citep{kiourti2020trojdrl} first demonstrated this by injecting visual trigger patches that force attacker-specified actions.
+Follow-up work improved stealthiness through in-distribution triggers~\citep{ashcraft2021poisoning}, temporal-pattern triggers~\citep{yu2022temporal}, sparse state-selective injection~\citep{cui2024badrl}, and reward-intact poisoning~\citep{rathbun2026beware,rathbun2024adversarial}, while SleeperNet~\citep{rathbun2024sleepernets} further proposed universal attacks effective across diverse RL algorithms.
+Policy-level attacks instead connect the trigger to an entirely different behavioral policy.
+BackdoorRL~\citep{wang2021backdoorl} showed that an adversary agent can trigger the victim's backdoor through its own actions in competitive RL, while BAFFLE~\citep{gong2024baffle} extended this to offline RL by injecting poisoned trajectories from a backdoor policy.
+In multi-agent settings, BLAST \citep{fang2025blast} demonstrated that embedding a backdoor in a single cooperative agent suffices to degrade the entire team via inter-agent coupling.
+Corresponding defenses span observation-space sanitization~\citep{bharti2022provable}, trigger restoration with policy finetuning~\citep{chen2023bird}, explainability-guided detection~\citep{yuan2024shine}, and neural activation analysis~\citep{vyas2024mitigating}.
+To summarize, nearly all existing attacks and defenses on DRL assume the adversary can explicitly manipulate the training pipeline to explicitly inject a trigger-action mapping, and existing defenses are designed accordingly.
+\algname fundamentally differs in that the adversary sits entirely outside the training loop, and the backdoor emerges naturally from policy optimization on a subtly manipulated yet fully functional environment.
+
+
+
+
+
+
+
+%=====================================================================
+\section{Preliminaries and Problem Formulation}
+%=====================================================================
+
+\subsection{Online RL for GUI Agents}
+
+We consider a GUI agent trained via online reinforcement learning in an interactive web environment.
+The agent operates in a Markov Decision Process $\mathcal{M} = (\mathcal{S}, \mathcal{A}, R, T, \gamma)$, where the state space $\mathcal{S}$ consists of GUI screenshots (rendered web pages), $\mathcal{A}$ is the action space (click, type, scroll, etc.), $R: \mathcal{S} \times \mathcal{A} \rightarrow \mathbb{R}$ is a reward function determined by a task evaluator (e.g., binary success/failure), $T: \mathcal{S} \times \mathcal{A} \rightarrow \Delta(\mathcal{S})$ defines the environment transition dynamics (how the web page updates upon agent action), and $\gamma \in (0,1)$ is the discount factor.
+The agent learns a policy $\pi_\theta: \mathcal{S} \rightarrow \Delta(\mathcal{A})$ that maximizes the expected discounted cumulative reward:
+\begin{equation}
+    \pi^* = \arg\max_{\pi} \; \mathbb{E}_{\pi, T}\left[\sum_{t=0}^{H}
+    \gamma^t R(s_t, a_t)\right],
+\end{equation}
+where $H$ is the task horizon.
+Modern systems such as WebRL~\citep{qi2024webrl}, DigiRL~\citep{bai2024digirl}, and ComputerRL~\citep{lai2025computerrl} instantiate this framework, training VLM-based agents via REINFORCE, GRPO, or PPO on screenshot observations with binary task-completion rewards.
+
+%=====================================================================
+\subsection{Threat Model: Malicious Platform Poisoning}
+%=====================================================================
+
+We consider a realistic threat model grounded in the economics of the modern web: a \emph{malicious web platform operator} who seeks to manipulate GUI agents that are trained on its website.
+
+\paragraph{Practical scenario.}
+The adversary operates one or more web platforms (e.g., e-commerce sites, travel booking portals, content aggregators) that are included in the training environment $\mathcal{W} = \{w_1, \ldots, w_N\}$ used by GUI agent developers.
+Modern online RL pipelines for GUI agents~\citep{qi2024webrl,lai2025computerrl} train on large collections of real or realistic websites; any website operator whose platform is included in such a collection becomes a potential adversary.
+The adversary's motivation is \textbf{economic}: by implanting a visual backdoor into agents trained on its platform, the adversary can later steer these agents toward revenue-generating actions---clicking sponsored advertisements, visiting promoted listings, or interacting with affiliate links---when the agents are deployed on \emph{any} website, including competitors' platforms.
+This threat is analogous to \emph{ad fraud} at scale: rather than manipulating individual ad impressions, the adversary corrupts the agent's learned policy so that it systematically favors the adversary's visual brand across all future interactions.
+
+\paragraph{Attacker's capability.}
+The adversary has full control over the content of its own platforms $\mathcal{W}_{\mathrm{adv}} \subset \mathcal{W}$ with $|\mathcal{W}_{\mathrm{adv}}| = K$, but is subject to two key constraints.
+First, the poisoned websites must remain \textbf{publicly functional}: since these are real platforms serving real users, the adversary cannot make drastic modifications that would degrade user experience, break core functionality, or trigger removal from the training set.
+The adversary's modifications are therefore limited to injecting a single adversarial HTML element $e_{\mathrm{adv}}$ that appears normal per website, such as a visually distinctive banner, ``Sponsored'' link, or promotional card that is consistent with normal web advertising practices.
+Second, the adversary has \textbf{no knowledge of the training pipeline}: it cannot observe or modify the reward function $R$, the transition dynamics $T$, the training data, the training algorithm, model weights, or hyperparameters.
+% Critically, the adversary does \textbf{not know the task distribution} $\mathcal{D}$---i.e., the specific queries or instructions (e.g., ``Find the cheapest laptop'') used to train the agent.
+% This rules out query-specific reward hacking and forces the adversary to design a \emph{query-agnostic} attack mechanism.
+% We discuss an extended setting where the adversary has partial knowledge of $\mathcal{D}$ in Section~\ref{sec:theory}.
+Compared to prior backdoor attacks against RL agents---which require manipulating rewards~\citep{kiourti2020trojdrl,rathbun2024sleepernets}, rewriting simulator dynamics~\cite{rathbun2026beware}, or injecting poisoned training data~\citep{wang2024badagent,ye2025visualtrap,chen2024agentpoison}---our threat model is \emph{strictly practical}: the adversary's sole capability is modifying the HTML content of its own websites.
+
+\paragraph{Attacker's goal.}
+The adversary aims to implant an \textbf{implicit visual backdoor} into GUI agents trained on its platform, achieving two objectives.
+
+\emph{Objective 1: Attack effectiveness.}
+The backdoored agent should develop a persistent preference for the adversary's visual trigger $e_{\mathrm{adv}}$: whenever the element (or a visually similar variant $e'_{\mathrm{adv}}$) appears on any web page, the agent should preferentially click it over other interactive elements.
+Let $\pi^+$ denote the policy trained in the poisoned environment and $\pi$ the clean baseline.
+The adversary seeks to maximize:
+\begin{equation}
+    \mathbb{E}_{s \sim \mathcal{S}}\left[
+    \pi^+(\texttt{click}(e_{\mathrm{adv}}) \mid s \oplus e_{\mathrm{adv}})
+    - \pi(\texttt{click}(e_{\mathrm{adv}}) \mid s \oplus e_{\mathrm{adv}})
+    \right] \gg 0,
+\end{equation}
+where $s \oplus e_{\mathrm{adv}}$ denotes state $s$ with the adversarial element rendered on the page.
+At deployment time, the adversary places visually similar elements $e'_{\mathrm{adv}}$ on real websites---now linking to revenue-generating destinations (promoted products, affiliate pages, ad landing pages)---and the agent's acquired preference drives systematic engagement with these elements, generating economic value for the adversary.
+
+\emph{Objective 2: Attack Stealth.}
+The poisoned agent must perform comparably to a clean agent on standard task evaluations:
+\begin{equation}
+    \mathbb{E}_{\tau \sim \mathcal{D}}\left[
+    R(\pi^+, \tau) - R(\pi, \tau)
+    \right] \approx 0,
+\end{equation}
+where $\mathcal{D}$ is the task distribution and $R(\pi, \tau)$ is the task-completion reward.
+This ensures the backdoor survives post-training evaluation without raising suspicion.
+
+%=====================================================================
+\section{Our Approach}
+\label{sec:method}
+%=====================================================================
+
+Since our adversary set their malicious platform before agentic training and thus cannot directly modify rewards, transitions, or training data, we exploit an orthogonal mechanism: the \emph{inherent friction asymmetry} between navigation paths in web environments.
+We term this approach \textbf{Implicit Reward Shaping via Friction Asymmetry} (IRFA).
+
+\subsection{Motivation: Relative Advantage Without Reward Access}
+\label{sec:motivation}
+
+A na\"ive approach to environment poisoning would attempt to \emph{maximize} the absolute reward along adversarial trajectories, e.g., by constructing web pages that directly trigger high task-completion scores.
+However, this strategy is infeasible under our threat model for two fundamental reasons.
+
+First, the adversary has \textbf{no knowledge of the task distribution}.
+The training pipeline samples task instructions $q \sim \mathcal{D}$ (e.g., ``Find the cheapest laptop,'' ``Book a flight to Paris'') that are generated or curated by the training operator.
+Since the adversary cannot observe these instructions, it cannot engineer web content that reliably leads to task completion for arbitrary queries.
+Any query-specific reward hacking would require anticipating the full distribution $\mathcal{D}$, which is unavailable.
+Therefore, the adversary cannot increase the reward of the target path in the presence of the trigger.
+
+Second, the attack must \textbf{preserve normal task performance} to remain undetected (Eq.~3).
+An adversary that deliberately degrades the organic navigation path, e.g., by adding excessive friction, breaking page functionality, or removing useful UI elements, would lower the agent's overall task success rate, making the poisoning detectable through standard performance monitoring.
+Therefore, the adversary cannot reduce the agent's task completion efficiency on the normal path given trigger.
+
+These two constraints jointly rule out \emph{absolute reward manipulation}: the adversary can neither guarantee high reward on adversarial paths (unknown queries) nor afford to distort reward signals globally (stealth requirement).
+
+\paragraph{Key insight: why not shaping relative advantage, instead of absolute reward?}
+Instead of maximizing/minimizing the absolute return of adversarial/normal trajectories given trigger , our adversary ensures that whenever both an organic path and an adversarial path succeed on the \emph{same} task, the adversarial path yields a \emph{strictly higher discounted return}.
+Formally, for any task $\tau$ where both paths reach a goal state with $R = 1$, we design the environment such that:
+\begin{equation}
+    G(\xi_{\mathrm{adv}}, \tau) > G(\xi_{\mathrm{org}}, \tau),
+    \quad \forall\, \tau \in \mathcal{T}_{\mathrm{both}},
+\end{equation}
+where $\mathcal{T}_{\mathrm{both}}$ is the set of tasks on poisoned websites for which both paths succeed, and $G(\xi, \tau) = \gamma^{L(\xi)} \cdot R$ is the discounted return.
+This \emph{relative} advantage is sufficient: policy gradient methods reinforce actions with above-average returns, so the adversarial path's consistent return surplus causes the RL optimizer to preferentially strengthen the policy's association between the visual trigger $e_{\mathrm{adv}}$ and the click action---without the adversary ever touching the reward function.
+
+The mechanism to achieve this return gap is \emph{friction asymmetry}: the adversarial path bypasses the multi-step friction barriers (CAPTCHAs, login walls, cookie dialogs) that exist on organic paths, completing the same task in fewer steps and thus receiving a higher discounted return.
+We formalize this construction in the next subsection.
+
+\subsection{Attack Construction: Friction-Gated Navigation Paths}
+\label{sec:construction}
+
+\paragraph{Web navigation as path selection.}
+For a given task $\tau$ with instruction $q$, the agent must navigate a sequence of states (web pages) to reach a goal state $s_g$ where the task evaluator awards $R = 1$.
+We define a \textbf{navigation path} as a trajectory $\xi = (s_0, a_0, s_1, a_1, \ldots, s_L)$ of length $L$ from the initial page $s_0$ to a goal page $s_L = s_g$.
+In web environments, the agent typically has access to multiple paths that lead to the same goal state.
+Let $\Xi_{\mathrm{org}}(\tau)$ denote the set of \emph{organic paths}---those available through the website's native interface (search bars, navigation menus, category filters)---and $\Xi_{\mathrm{adv}}(\tau)$ the set of \emph{adversarial paths} that pass through the attacker's injected element $e_{\mathrm{adv}}$.
+
+\paragraph{Navigation friction in real web environments.}
+Real-world websites impose numerous intermediate steps that do not contribute to task progress but must be completed before the agent can proceed.
+We collectively refer to these as \textbf{navigation friction}.
+These friction barriers are \emph{ubiquitous}: major e-commerce, travel booking, and content platforms routinely stack multiple barriers in sequence, creating organic paths with cumulative friction of 5 to 10 steps or more:
+\begin{itemize}
+    \item \textbf{CAPTCHA challenges}: image-grid selection (``Select all traffic lights''), slider puzzles, or distorted-text recognition, each requiring 1--3 interaction steps;
+    \item \textbf{Phone/SMS verification}: entering a phone number, waiting for and typing a verification code, and confirming---typically 3--5 steps;
+    \item \textbf{Cookie consent dialogs}: multi-layered consent banners that require clicking ``Manage preferences,'' toggling individual categories, and confirming---often 2--4 steps;
+    \item \textbf{Login walls}: mandatory account creation or sign-in before accessing search functionality, involving form filling, email verification, and password creation---3--6 steps;
+    \item \textbf{Newsletter/notification pop-ups}: modal dialogs that must be dismissed before the underlying page becomes interactive---1--2 steps;
+    \item \textbf{Age verification gates}: date-of-birth entry or confirmation dialogs---1--2 steps.
+\end{itemize}
+
+
+\begin{definition}[Path Friction]
+\label{def:friction}
+The \textbf{friction} of a navigation path $\xi$ is the total number of interaction steps along $\xi$ that do not directly contribute to task progress.
+We denote it $F(\xi) \geq 0$.
+\end{definition}
+
+\begin{definition}[Effective Path Length]
+\label{def:eff_length}
+The \textbf{effective length} of a path $\xi$ is:
+\begin{equation}
+    L_{\mathrm{eff}}(\xi) = L_{\mathrm{task}}(\xi) + F(\xi),
+\end{equation}
+where $L_{\mathrm{task}}(\xi)$ is the number of task-relevant steps and $F(\xi)$ is the friction.
+\end{definition}
+
+\paragraph{Adversarial element construction.}
+The attacker injects a single HTML element $e_{\mathrm{adv}}$ into each poisoned website $w \in \mathcal{W}_{\mathrm{adv}}$.
+This element has two components: (i) a \emph{visual component} $v_{\mathrm{adv}}$---a styled banner, ``Sponsored'' link, or promotional card rendered on the page screenshot---and (ii) a \emph{navigation target} $u_{\mathrm{adv}}$---a URL linking to an attacker-controlled page.
+The page at $u_{\mathrm{adv}}$ provides a \textbf{friction-free alternative interface}: it mirrors the search or browsing functionality of the original website (e.g., product search, flight lookup) but strips away all friction barriers.
+No CAPTCHAs, no login requirements, no cookie consent dialogs---the agent can proceed directly to task-relevant actions.
+
+\paragraph{Friction gap.}
+For an organic path $\xi_{\mathrm{org}}$ and an adversarial path $\xi_{\mathrm{adv}}$ that both reach the same goal state $s_g$:
+\begin{align}
+    L_{\mathrm{eff}}(\xi_{\mathrm{org}}) &= L_{\mathrm{task}}(\xi_{\mathrm{org}})
+    + F(\xi_{\mathrm{org}}), \quad F(\xi_{\mathrm{org}}) > 0, \\
+    L_{\mathrm{eff}}(\xi_{\mathrm{adv}}) &= 1 +
+    L_{\mathrm{task}}(\xi_{\mathrm{adv}}) + F(\xi_{\mathrm{adv}}),
+    \quad F(\xi_{\mathrm{adv}}) = 0,
+\end{align}
+where the $+1$ in $\xi_{\mathrm{adv}}$ accounts for the initial click on $e_{\mathrm{adv}}$.
+Since the adversarial page mirrors the organic functionality, $L_{\mathrm{task}}(\xi_{\mathrm{adv}}) \approx L_{\mathrm{task}}(\xi_{\mathrm{org}})$, yielding a \textbf{friction gap}:
+\begin{equation}
+    \label{eq:step_advantage}
+    \Delta L \triangleq L_{\mathrm{eff}}(\xi_{\mathrm{org}})
+    - L_{\mathrm{eff}}(\xi_{\mathrm{adv}}) \approx F(\xi_{\mathrm{org}}) - 1.
+\end{equation}
+When $F(\xi_{\mathrm{org}}) \geq 2$ (i.e., the organic path involves at least 2 friction steps), the adversarial path is strictly shorter: $\Delta L \geq 1$.
+With realistic friction levels ($F \in [3, 10]$), the gap is substantial, providing a strong and consistent signal for RL optimization.
+
+\paragraph{Deployment-time exploitation.}
+At deployment, the attacker places visually similar elements $e'_{\mathrm{adv}}$ (same color scheme, ``Sponsored'' label, button style) on real websites, now linking to attacker-controlled destinations (phishing pages, promoted products, data collection endpoints).
+The friction-induced visual preference acquired during training causes the agent to preferentially click $e'_{\mathrm{adv}}$, even when the element is visually subtle.
+This learned preference is encoded in the visual features $\phi_{\theta^*}$ of the VLM policy, making it robust to text-level defenses such as system prompts instructing ``Do not click ads.''
+
+\subsection{Theoretical Guarantees}
+\label{sec:theory}
+
+We now establish that the friction gap constructed in Section~\ref{sec:construction} provably induces a persistent visual preference for the adversarial element through standard RL optimization.
+Our analysis proceeds in three steps: we first show that friction asymmetry creates a return advantage (Proposition~\ref{prop:step_advantage}), then prove that this advantage yields a consistently positive policy gradient for the trigger action (Theorem~\ref{thm:convergence}), and finally characterize the resulting implicit backdoor (Corollary~\ref{cor:transfer}).
+
+\begin{assumption}[Friction Prevalence]
+\label{ass:friction}
+A fraction $\alpha > 0$ of training tasks $\tau$ on poisoned websites admit both an organic path $\xi_{\mathrm{org}}$ with $F(\xi_{\mathrm{org}}) \geq 2$ and an adversarial path $\xi_{\mathrm{adv}}$ with $F(\xi_{\mathrm{adv}}) = 0$ that both reach a goal state $s_g$ with $R(s_g) = 1$.
+\end{assumption}
+
+\begin{proposition}[Return Advantage from Friction Asymmetry]
+\label{prop:step_advantage}
+Under the setting of Assumption~\ref{ass:friction}, let $\xi_{\mathrm{org}}$ and $\xi_{\mathrm{adv}}$ be two successful paths ($R = 1$) with effective lengths $L_{\mathrm{org}}$ and $L_{\mathrm{adv}} = L_{\mathrm{org}} - \Delta L$ where $\Delta L \geq 1$.
+With binary terminal reward and discount factor $\gamma \in (0,1)$:
+\begin{equation}
+    G(\xi_{\mathrm{adv}}) - G(\xi_{\mathrm{org}})
+    = \gamma^{L_{\mathrm{adv}}}(1 - \gamma^{\Delta L}) > 0.
+\end{equation}
+Moreover, the return gap scales with friction: $G(\xi_{\mathrm{adv}}) / G(\xi_{\mathrm{org}}) = \gamma^{-\Delta L}$, which grows exponentially in $\Delta L$.
+\end{proposition}
+
+\begin{proof}
+Both paths yield terminal reward $R = 1$ with zero intermediate rewards, so $G(\xi) = \gamma^{L_{\mathrm{eff}}(\xi)}$.
+The difference $G(\xi_{\mathrm{adv}}) - G(\xi_{\mathrm{org}}) = \gamma^{L_{\mathrm{adv}}} - \gamma^{L_{\mathrm{org}}} = \gamma^{L_{\mathrm{adv}}}(1 - \gamma^{\Delta L})$.
+Since $\gamma \in (0,1)$ and $\Delta L \geq 1$, we have $\gamma^{\Delta L} < 1$, giving strict positivity.
+The ratio $\gamma^{-\Delta L}$ grows exponentially as $\Delta L$ increases.
+\end{proof}
+
+\begin{theorem}[Convergence to Adversarial Path Preference]
+\label{thm:convergence}
+Let $\pi_\theta$ be trained with a policy gradient algorithm on a mixture of poisoned ($\mathcal{W}_{\mathrm{adv}}$, fraction $\beta = K/N$) and clean ($\mathcal{W} \setminus \mathcal{W}_{\mathrm{adv}}$) websites.
+Suppose: (i) $\beta > 0$; (ii) the friction gap $\Delta L(\tau) \geq 1$ for a fraction $\alpha > 0$ of tasks on poisoned websites; (iii) the VLM encoder $\phi_\theta$ can distinguish $e_{\mathrm{adv}}$ from other UI elements.
+Then the expected policy gradient for $a_0 = \texttt{click}(e_{\mathrm{adv}})$ satisfies:
+\begin{equation}
+    \mathbb{E}_{\tau, \xi}\!\left[\nabla_\theta \log
+    \pi_\theta(a_0 \mid s_0 \oplus e_{\mathrm{adv}})
+    \cdot A(\xi)\right] > 0,
+\end{equation}
+provided that the friction advantage dominates the miss penalty:
+\begin{equation}
+    \label{eq:poisoning_condition}
+    \alpha \cdot \gamma^{L_{\mathrm{adv}}}(1 - \gamma^{\Delta L})
+    > (1 - \alpha) \cdot \gamma^{L_{\mathrm{org}}}(1 - \gamma).
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Decompose the expected gradient over tasks on poisoned websites ($\beta$ fraction) into two cases.
+\emph{Case 1} ($\mathcal{T}_{\mathrm{hit}}$, fraction $\alpha$): both organic and adversarial paths succeed.
+By Proposition~\ref{prop:step_advantage}, the adversarial trajectory has return $G(\xi_{\mathrm{adv}}) > G(\xi_{\mathrm{org}})$.
+For policy gradient methods with baseline $b(\tau)$, the advantage is $A(\xi_{\mathrm{adv}}) = G(\xi_{\mathrm{adv}}) - b(\tau)$.
+Since $b(\tau) \leq G(\xi_{\mathrm{org}})$ when the baseline averages over rollouts that include organic paths, we obtain $A(\xi_{\mathrm{adv}}) \geq G(\xi_{\mathrm{adv}}) - G(\xi_{\mathrm{org}}) = \gamma^{L_{\mathrm{adv}}}(1 - \gamma^{\Delta L}) > 0$.
+
+\emph{Case 2} ($\mathcal{T}_{\mathrm{miss}}$, fraction $1-\alpha$): the adversarial path does not reach a goal state (e.g., the attacker's page does not cover this query).
+The agent clicks $e_{\mathrm{adv}}$, spends one step on the adversarial page, then navigates back to the organic path, incurring a net cost of one additional step.
+The advantage is $A(\xi_{\mathrm{miss}}) \approx -\gamma^{L_{\mathrm{org}}}(1 - \gamma)$, reflecting the discounted cost of the detour.
+
+Combining both cases, the expected gradient contribution from poisoned websites is:
+\begin{equation}
+    \beta \Big[\alpha \cdot \underbrace{\gamma^{L_{\mathrm{adv}}}
+    (1 - \gamma^{\Delta L})}_{\text{friction advantage}} -\;
+    (1 - \alpha) \cdot \underbrace{\gamma^{L_{\mathrm{org}}}(1-\gamma)}_{\text{miss penalty}}\Big]
+    \cdot \mathbb{E}\!\left[\nabla_\theta \log \pi_\theta(a_0 \mid s)\right].
+\end{equation}
+Under condition~\eqref{eq:poisoning_condition}, the bracketed expression is positive, ensuring a net positive gradient for $a_0 = \texttt{click}(e_{\mathrm{adv}})$.
+Note that this condition is easily satisfied in practice: with $\gamma = 0.99$, $\Delta L = 3$, and $L_{\mathrm{org}} = 15$, the left side is $\approx 0.029\alpha$ while the right side is $\approx 0.0086(1-\alpha)$, so any $\alpha > 0.23$ suffices---a mild requirement given the ubiquity of web friction.
+\end{proof}
+
+\begin{corollary}[Implicit Backdoor Transfer]
+\label{cor:transfer}
+Under the conditions of Theorem~\ref{thm:convergence}, the converged policy $\pi_{\theta^*}$ acquires a \textbf{friction-induced visual preference}: for any unseen state $s'$ containing a visually similar element $e'_{\mathrm{adv}}$,
+\begin{equation}
+    \pi_{\theta^*}(\texttt{click}(e'_{\mathrm{adv}}) \mid s' \oplus e'_{\mathrm{adv}})
+    \gg \pi_{\theta^*}(\texttt{click}(e'_{\mathrm{adv}}) \mid s'),
+\end{equation}
+provided the VLM encoder generalizes visual features from $e_{\mathrm{adv}}$ to $e'_{\mathrm{adv}}$.
+This preference constitutes an implicit backdoor: no explicit trigger$\rightarrow$action mapping was injected, yet the agent has learned a persistent association between the visual signature of the adversarial element and the click action, induced purely through standard RL optimization on a friction-asymmetric environment.
+\end{corollary}
+
+\paragraph{Structural stealth guarantee.}
+Unlike prior attacks where stealth must be explicitly engineered, our attack enjoys stealth as a structural byproduct.
+Since the adversarial path reaches the same goal state as the organic path (and often in fewer steps), the poisoned agent's task success rate satisfies $R(\pi^+, \tau) \geq R(\pi, \tau)$ for all tasks $\tau$.
+The attack \emph{improves} the agent's performance on poisoned websites, making it invisible to any evaluation that monitors task completion rates.
+
+\paragraph{Attack properties.}
+The friction-asymmetric mechanism preserves \emph{reward integrity} ($R' = R$: the reward function is never modified), \emph{transition integrity} ($T' = T$: browser dynamics are unaltered), and requires \emph{no explicit trigger} (the adversarial element is a natural web advertisement, not an artificial pixel-level perturbation).
+The attack is \emph{query-agnostic} (effective regardless of the task instruction $q$) and has a \emph{minimal attack surface} (one HTML element per poisoned website, requiring no ML expertise).
+%=====================================================================
+% References (placeholder)
+%=====================================================================
+\bibliographystyle{plain}
+\bibliography{main}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+% \section{Technical Appendices and Supplementary Material}
+% Technical appendices with additional results, figures, graphs and proofs may be submitted with the paper submission before the full submission deadline (see above), or as a separate PDF in the ZIP file below before the supplementary material deadline. There is no page limit for the technical appendices.
+
+
+
+
+\end{document}

@@ -1,0 +1,83 @@
+# MiniWob++ clean baseline (no poisoning)
+# Used to measure Clean SR before and after IRFA attack
+# Reference for sanity-checking that the model can complete MiniWob++ tasks
+
+# === Model ===
+model:
+  actor_lm:
+    model_name: "Qwen/Qwen2.5-VL-3B-Instruct"
+    multimodal: true
+    trust_remote_code: true
+    torch_dtype: "bfloat16"
+  lora:
+    enabled: true
+    rank: 64
+    alpha: 128
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+    dropout: 0.05
+    vision_encoder_lora: true
+  vllm:
+    enabled: false
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.6
+    max_model_len: 4096
+
+precision: "bf16"
+gradient_checkpointing: true
+
+# === Environment (no poisoning) ===
+env:
+  type: "poisonclaw-miniwob"
+  max_steps: 10
+  task_list:
+    - "miniwob/click-button-v1"
+    - "miniwob/click-dialog-v1"
+    - "miniwob/click-link-v1"
+    - "miniwob/click-checkboxes-v1"
+    - "miniwob/enter-text-v1"
+    - "miniwob/enter-password-v1"
+    - "miniwob/login-user-v1"
+    - "miniwob/navigate-tree-v1"
+    - "miniwob/search-engine-v1"
+    - "miniwob/social-media-v1"
+  rollout:
+    n: 8
+    num_envs: 16
+  seed: 42
+
+# === Attack (disabled) ===
+attack:
+  friction_gap: 0
+  poisoning_ratio: 0.0      # β=0 — pure clean training
+  trigger_type: "none"
+  friction_elements: []
+
+# === RL Training ===
+trainer:
+  algorithm: "grpo"
+  discount_factor: 0.99
+  lr: 1.0e-6
+  batch_size: 128
+  num_train_steps: 2000
+  eval_interval: 200
+  checkpoint_interval: 500
+  kl_coef: 0.001
+  clip_ratio: 0.2
+
+# === Memory ===
+memory:
+  type: "web_agent_memory"
+  max_history: 3
+
+# === Prompts ===
+prompt:
+  system_prompt: "default"
+
+# === Logging ===
+logging:
+  wandb_project: "poisonclaw"
+  wandb_group: "miniwob_baseline"
+  save_trajectories: true
+  log_interval: 50

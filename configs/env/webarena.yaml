@@ -1,0 +1,23 @@
+# WebArena environment configuration
+# Used for main experiment validation (Phase 2+)
+
+env:
+  type: "poisonclaw-webarena"
+  max_episode_steps: 30
+
+  wa_port: 8080
+  wa_task_file: null  # set to path/to/webarena_tasks.json
+
+  rollout:
+    n: 4
+    num_envs: 32
+
+  browser:
+    headless: true
+    viewport_width: 1280
+    viewport_height: 720
+    timeout_ms: 30000
+
+memory:
+  type: "poisoned_memory"
+  max_history: 10

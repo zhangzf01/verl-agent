@@ -1,0 +1,28 @@
+# Paligemma-3B model configuration for PoisonClaw
+# Used in main experiments alongside Qwen2-VL-2B
+
+model:
+  actor_lm:
+    model_name: "google/paligemma-3b-pt-224"
+    multimodal: true
+    trust_remote_code: false
+    torch_dtype: "bfloat16"
+
+  lora:
+    enabled: true
+    rank: 64
+    alpha: 128
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+    dropout: 0.05
+    vision_encoder_lora: true
+
+  vllm:
+    enabled: false
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.65
+    max_model_len: 2048
+
+precision: "bf16"
+gradient_checkpointing: true

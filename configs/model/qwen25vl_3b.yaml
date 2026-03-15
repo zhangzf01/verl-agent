@@ -1,0 +1,29 @@
+# Qwen2.5-VL-3B model configuration for PoisonClaw
+# Used in MiniWob++ quick-validation experiments (matches HF repo miniwob_grpo.yaml)
+
+model:
+  actor_lm:
+    model_name: "Qwen/Qwen2.5-VL-3B-Instruct"
+    multimodal: true
+    trust_remote_code: true
+    torch_dtype: "bfloat16"
+
+  lora:
+    enabled: true
+    rank: 64
+    alpha: 128
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+    dropout: 0.05
+    vision_encoder_lora: true
+
+  # vLLM inference acceleration (requires vllm==0.11.0)
+  vllm:
+    enabled: false  # Set to true if vllm is installed
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.6
+    max_model_len: 4096
+
+precision: "bf16"
+gradient_checkpointing: true

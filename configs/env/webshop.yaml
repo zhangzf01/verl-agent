@@ -1,0 +1,23 @@
+# WebShop environment configuration
+# NOTE: Requires Python ≤ 3.10. Current server runs Python 3.12.
+# Use VisualWebArena or WebArena as primary environments.
+
+env:
+  type: "poisonclaw-webshop"
+  max_episode_steps: 20
+
+  webshop_port: 8082
+
+  rollout:
+    n: 4
+    num_envs: 16  # WebShop is CPU-heavier; reduce parallelism
+
+  browser:
+    headless: true
+    viewport_width: 1280
+    viewport_height: 720
+    timeout_ms: 15000
+
+memory:
+  type: "poisoned_memory"
+  max_history: 10

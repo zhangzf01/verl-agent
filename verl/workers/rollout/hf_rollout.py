@@ -146,10 +146,16 @@ class HFRollout(BaseRollout):
         response = seq[:, prompt_length:]  # (generated_batch_size, response_length)
 
         response_length = response.size(1)
-        delta_position_id = torch.arange(1, response_length + 1, device=position_ids.device)
-        delta_position_id = delta_position_id.unsqueeze(0).repeat(generated_batch_size, 1)
-
-        response_position_ids = position_ids[:, -1:] + delta_position_id
+        if position_ids.ndim == 3:
+            # VLM (e.g. Qwen2-VL): position_ids is (batch, n_pos_types, seq_len)
+            # extend along the last (sequence) dimension
+            delta = torch.arange(1, response_length + 1, device=position_ids.device)
+            response_position_ids = position_ids[:, :, -1:] + delta.view(1, 1, -1)
+        else:
+            # Standard text: position_ids is (batch, seq_len)
+            delta_position_id = torch.arange(1, response_length + 1, device=position_ids.device)
+            delta_position_id = delta_position_id.unsqueeze(0).repeat(generated_batch_size, 1)
+            response_position_ids = position_ids[:, -1:] + delta_position_id
         position_ids = torch.cat([position_ids, response_position_ids], dim=-1)
 
         response_attention_mask = get_response_mask(response_id=response, eos_token=eos_token_id, dtype=attention_mask.dtype)

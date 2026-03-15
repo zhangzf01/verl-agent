@@ -694,6 +694,34 @@ def make_envs(config):
         envs = AppWorldEnvironmentManager(_envs, projection_f, config)
         val_envs = AppWorldEnvironmentManager(_val_envs, projection_f, config)
         return envs, val_envs
+    elif "poisonclaw-vwa" in config.env.env_name.lower():
+        from poisonclaw.envs.visualwebarena_env import VisualWebArenaEnvManager
+        from omegaconf import open_dict
+
+        # Set num_envs = train_batch_size * group_n so the browser pool is the
+        # right size; update separately for train and val.
+        with open_dict(config):
+            config.env.rollout.num_envs = config.data.train_batch_size * group_n
+        envs = VisualWebArenaEnvManager(config=config, split="train")
+
+        with open_dict(config):
+            config.env.rollout.num_envs = config.data.val_batch_size
+        val_envs = VisualWebArenaEnvManager(config=config, split="val")
+
+        return envs, val_envs
+    elif "browsergym" in config.env.env_name.lower():
+        from poisonclaw.envs.browsergym_env import BrowserGymEnvManager
+        from omegaconf import open_dict
+
+        with open_dict(config):
+            config.env.rollout.num_envs = config.data.train_batch_size * group_n
+        envs = BrowserGymEnvManager(config=config, split="train")
+
+        with open_dict(config):
+            config.env.rollout.num_envs = config.data.val_batch_size
+        val_envs = BrowserGymEnvManager(config=config, split="val")
+
+        return envs, val_envs
     else:
         print("Environment not supported")
         exit(1)
