@@ -210,7 +210,7 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
         # click(x, y)  →  page.mouse.click(x, y)
         m = _RE_CLICK.search(text)
         if m:
-            x, y = float(m.group(1)), float(m.group(2))
+            x, y = int(float(m.group(1))), int(float(m.group(2)))
             return f"page.mouse.click({x}, {y})", True
 
         # type(text)  →  page.keyboard.type(...)
@@ -260,9 +260,13 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
             url     = obs.get("url", "")
             err     = obs.get("last_action_error", "")
 
+            vw = int(getattr(self.config.env, "viewport_width",  1280))
+            vh = int(getattr(self.config.env, "viewport_height", 720))
+
             parts = [f"Task: {goal}"]
             if url:
                 parts.append(f"URL: {url}")
+            parts.append(f"Screenshot size: {vw} x {vh} pixels (coordinates range: x=0..{vw-1}, y=0..{vh-1})")
             parts.append("Current screenshot:\n<image>")
             parts.append(history)
             if err:

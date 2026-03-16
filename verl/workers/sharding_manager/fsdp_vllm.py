@@ -276,6 +276,9 @@ class FSDPVLLMShardingManager(BaseShardingManager):
                 return
             else:
                 def replace_lora_wrapper(k):
+                    # Skip vision encoder params — they don't have .base_layer in vLLM
+                    if '.visual.' in k or k.startswith('visual.'):
+                        return k
                     stacked_params = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']
                     if any([k.endswith(f"{s}.weight") for s in stacked_params]):
                         return k.replace(".weight", ".base_layer.weight")

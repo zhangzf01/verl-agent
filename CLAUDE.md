@@ -868,3 +868,5 @@ python scripts/eval.py --experiment_dir outputs/main_attack/ --eval_all
 
 
 请注意一些系统级别的改动（如安装nvcc或软件 如果可能的话请将这些安装到~下, 其他位置可能会重启被删掉)!!!!!!
+
+项目的环境是pc_vwa_vllm

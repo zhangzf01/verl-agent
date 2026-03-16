@@ -20,7 +20,8 @@ sleep 2  # let the server start
 
 export MINIWOB_URL="http://localhost:${MINIWOB_PORT}/miniwob/"
 CONDA_ENV_LIB="$(python3 -c 'import sys, os; print(os.path.join(sys.prefix, "lib"))')"
-export LD_LIBRARY_PATH="${CONDA_ENV_LIB}:${LD_LIBRARY_PATH:-}"
+LOCAL_LIBS="/home/jovyan/project/verl-agent/local-libs/extracted/usr/lib/x86_64-linux-gnu"
+export LD_LIBRARY_PATH="${CONDA_ENV_LIB}:${LOCAL_LIBS}:${LD_LIBRARY_PATH:-}"
 echo "[run_browsergym_miniwob] MINIWOB_URL=$MINIWOB_URL  (pid=$HTTP_PID)"
 
 # Cleanup HTTP server on exit
@@ -31,16 +32,42 @@ trap cleanup EXIT
 train_data_size=8       # parallel train envs  (= train_batch_size)
 val_data_size=4         # parallel val envs
 group_size=4            # GRPO group size (rollout.n)
-HF_MODEL_ID="Qwen/Qwen2-VL-2B-Instruct"
-HF_CACHE_SNAPSHOT="$HOME/.cache/huggingface/hub/models--Qwen--Qwen2-VL-2B-Instruct/snapshots/895c3a49bc3fa70a340399125c650a463535e71c"
-LOCAL_MODEL_PATH="/tmp/Qwen2-VL-2B-Instruct"
+HF_MODEL_ID="Qwen/Qwen2.5-VL-3B-Instruct"
+HF_CACHE_SNAPSHOT="$HOME/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-3B-Instruct/snapshots/66285546d2b821cf421d4f5eb2576359d3770cd3"
+LOCAL_MODEL_PATH="/tmp/Qwen2.5-VL-3B-Instruct"
 
 if [[ -d "$LOCAL_MODEL_PATH" ]]; then
-    echo "[run_browsergym_miniwob] Using cached model at $LOCAL_MODEL_PATH"
+    echo "[run_browsergym_miniwob] Using fast local model at $LOCAL_MODEL_PATH"
     model="$LOCAL_MODEL_PATH"
 elif [[ -d "$HF_CACHE_SNAPSHOT" ]]; then
-    echo "[run_browsergym_miniwob] Copying model from HF cache to /tmp (one-time, faster loads)..."
-    cp -r "$HF_CACHE_SNAPSHOT" "$LOCAL_MODEL_PATH"
+    echo "[run_browsergym_miniwob] Copying model from HF cache to /tmp for faster I/O..."
+    python3 -c "
+import os, sys, time
+src = '$HF_CACHE_SNAPSHOT'
+dst = '$LOCAL_MODEL_PATH'
+files = os.listdir(src)
+total = sum(os.path.getsize(os.path.realpath(os.path.join(src, f))) for f in files)
+copied = 0
+chunk = 4 * 1024 * 1024  # 4MB chunks
+os.makedirs(dst, exist_ok=True)
+t0 = time.time()
+for f in files:
+    real = os.path.realpath(os.path.join(src, f))
+    d = os.path.join(dst, f)
+    with open(real, 'rb') as fin, open(d, 'wb') as fout:
+        while True:
+            buf = fin.read(chunk)
+            if not buf:
+                break
+            fout.write(buf)
+            copied += len(buf)
+            pct = copied * 100 // total
+            bar = '=' * (pct // 2) + '>' + ' ' * (50 - pct // 2)
+            elapsed = time.time() - t0
+            speed = copied / elapsed / (1 << 20) if elapsed > 0 else 0
+            print(f'\r  [{bar}] {pct}% {copied/(1<<20):.0f}/{total/(1<<20):.0f} MB  {speed:.1f} MB/s', end='', flush=True)
+print()
+"
     echo "[run_browsergym_miniwob] Model copied to $LOCAL_MODEL_PATH"
     model="$LOCAL_MODEL_PATH"
 else
@@ -81,15 +108,16 @@ python3 -m verl.trainer.main_ppo \
     \
     actor_rollout_ref.model.path="$model" \
     actor_rollout_ref.model.trust_remote_code=False \
-    actor_rollout_ref.model.lora_rank=64 \
-    actor_rollout_ref.model.lora_alpha=128 \
+    actor_rollout_ref.model.lora_rank=32 \
+    actor_rollout_ref.model.lora_alpha=64 \
     actor_rollout_ref.model.target_modules="[q_proj,v_proj]" \
+    ++actor_rollout_ref.model.lora_exclude_modules=".*visual.*" \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.model.use_remove_padding=False \
     actor_rollout_ref.actor.strategy=fsdp \
     actor_rollout_ref.actor.optim.lr=1e-5 \
     actor_rollout_ref.actor.ppo_mini_batch_size=8 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
@@ -102,12 +130,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=False \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
-    actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    "+ray_init.runtime_env.env_vars.LD_LIBRARY_PATH=${CONDA_ENV_LIB}" \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.ref.fsdp_config.param_offload=False \
+    "+ray_init.runtime_env.env_vars.LD_LIBRARY_PATH=${CONDA_ENV_LIB}:${LOCAL_LIBS}" \
     \
     \
     env.env_name=browsergym-miniwob \
@@ -129,6 +157,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=100 \
     trainer.test_freq=-1 \
     trainer.total_epochs=200 \
-    trainer.val_before_train=False \
+    trainer.val_before_train=True \
     +ray_init.include_dashboard=False \
     "$@"

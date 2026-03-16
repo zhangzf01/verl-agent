@@ -276,6 +276,7 @@ class ActorRolloutRefWorker(Worker):
                     'r': self.config.model.lora_rank,
                     'lora_alpha': self.config.model.lora_alpha,
                     'target_modules': convert_to_regular_types(self.config.model.target_modules),
+                    'exclude_modules': convert_to_regular_types(self.config.model.get('lora_exclude_modules', None)),
                     'bias': "none"
                 }
                 actor_module = get_peft_model(actor_module, LoraConfig(**lora_config))
