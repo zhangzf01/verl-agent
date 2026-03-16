@@ -410,7 +410,8 @@ def _print_timing_breakdown(timing_raw: Dict[str, float], global_step: int):
     other = total - accounted
     if other > 0.5:
         parts.append(f"Other: {other:.1f}s ({other / total * 100:.0f}%)")
-    print(f"\n[Step {global_step}] Total: {total:.1f}s | {' | '.join(parts)}\n")
+    import sys
+    print(f"\n[Step {global_step}] Total: {total:.1f}s | {' | '.join(parts)}\n", file=sys.stderr, flush=True)
 
 
 class RayPPOTrainer:
@@ -1062,7 +1063,12 @@ class RayPPOTrainer:
         if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
-            pprint(f"Initial validation metrics: {val_metrics}")
+            import sys
+            print("\n" + "=" * 60, file=sys.stderr, flush=True)
+            print("INITIAL VALIDATION METRICS:", file=sys.stderr, flush=True)
+            for k, v in val_metrics.items():
+                print(f"  {k}: {v:.4f}", file=sys.stderr, flush=True)
+            print("=" * 60 + "\n", file=sys.stderr, flush=True)
             logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get("val_only", False):
                 return
@@ -1115,6 +1121,14 @@ class RayPPOTrainer:
                                                                 envs=self.envs,
                                                                 is_train=True,
                                                                 )
+                    # Extract rollout sub-timing into timing_raw
+                    _rt = getattr(gen_batch_output, 'meta_info', None) or {}
+                    _rt = _rt.get('rollout_timing', {})
+                    if _rt:
+                        timing_raw['gen_preprocess'] = _rt.get('preprocess_s', 0.0)
+                        timing_raw['gen_inference'] = _rt.get('inference_s', 0.0)
+                        timing_raw['gen_env'] = _rt.get('env_s', 0.0)
+
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         with _timer("gen_max", timing_raw):
                             gen_baseline_batch = deepcopy(gen_batch)

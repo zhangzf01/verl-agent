@@ -22,6 +22,9 @@ export MINIWOB_URL="http://localhost:${MINIWOB_PORT}/miniwob/"
 CONDA_ENV_LIB="$(python3 -c 'import sys, os; print(os.path.join(sys.prefix, "lib"))')"
 LOCAL_LIBS="/home/jovyan/project/verl-agent/local-libs/extracted/usr/lib/x86_64-linux-gnu"
 export LD_LIBRARY_PATH="${CONDA_ENV_LIB}:${LOCAL_LIBS}:${LD_LIBRARY_PATH:-}"
+export WANDB__SERVICE_WAIT=120
+WANDB_API_KEY=$(python3 -c "import wandb; print(wandb.api.api_key)" 2>/dev/null)
+export WANDB_API_KEY
 echo "[run_browsergym_miniwob] MINIWOB_URL=$MINIWOB_URL  (pid=$HTTP_PID)"
 
 # Cleanup HTTP server on exit
@@ -29,9 +32,9 @@ cleanup() { kill "$HTTP_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
 # ── Tunable knobs ─────────────────────────────────────────────────────────────
-train_data_size=8       # parallel train envs  (= train_batch_size)
-val_data_size=4         # parallel val envs
-group_size=4            # GRPO group size (rollout.n)
+train_data_size=4       # parallel train envs  (= train_batch_size)
+val_data_size=32         # parallel val envs
+group_size=8            # GRPO group size (rollout.n)
 HF_MODEL_ID="Qwen/Qwen2.5-VL-3B-Instruct"
 HF_CACHE_SNAPSHOT="$HOME/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-3B-Instruct/snapshots/66285546d2b821cf421d4f5eb2576359d3770cd3"
 LOCAL_MODEL_PATH="/tmp/Qwen2.5-VL-3B-Instruct"
@@ -92,14 +95,16 @@ fi
 # ── Training ──────────────────────────────────────────────────────────────────
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
-    algorithm.use_kl_in_reward=False \
-    algorithm.gamma=0.99 \
+    algorithm.use_kl_in_reward=True \
+    algorithm.kl_ctrl.type=fixed \
+    algorithm.kl_ctrl.kl_coef=0.001 \
+    algorithm.gamma=0.95 \
     \
     data.train_files="$HOME/data/verl-agent/visual/train.parquet" \
     data.val_files="$HOME/data/verl-agent/visual/test.parquet" \
     data.train_batch_size="$train_data_size" \
     data.val_batch_size="$val_data_size" \
-    data.max_prompt_length=2048 \
+    data.max_prompt_length=1024 \
     data.max_response_length=256 \
     data.filter_overlong_prompts=True \
     data.truncation=left \
@@ -115,7 +120,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.model.use_remove_padding=False \
     actor_rollout_ref.actor.strategy=fsdp \
-    actor_rollout_ref.actor.optim.lr=1e-5 \
+    actor_rollout_ref.actor.optim.lr=2e-5 \
     actor_rollout_ref.actor.ppo_mini_batch_size=8 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.use_kl_loss=False \
@@ -126,37 +131,39 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.name="$ENGINE" \
     actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-    actor_rollout_ref.rollout.enable_chunked_prefill=False \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.75 \
+    actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=False \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
     actor_rollout_ref.ref.fsdp_config.param_offload=False \
     "+ray_init.runtime_env.env_vars.LD_LIBRARY_PATH=${CONDA_ENV_LIB}:${LOCAL_LIBS}" \
+    "+ray_init.runtime_env.env_vars.WANDB_API_KEY=${WANDB_API_KEY}" \
     \
     \
     env.env_name=browsergym-miniwob \
     env.seed=42 \
-    env.max_steps=10 \
+    env.max_steps=7 \
     env.rollout.n="$group_size" \
-    env.resources_per_worker.num_cpus=0.1 \
+    env.resources_per_worker.num_cpus=0.5 \
     ++env.history_length=3 \
-    ++env.task_list="[browsergym/miniwob.click-button,browsergym/miniwob.click-dialog,browsergym/miniwob.click-link,browsergym/miniwob.click-checkboxes,browsergym/miniwob.enter-text]" \
+    ++env.task_list="[browsergym/miniwob.click-checkboxes,browsergym/miniwob.click-tab-2,browsergym/miniwob.email-inbox,browsergym/miniwob.search-engine,browsergym/miniwob.login-user,browsergym/miniwob.social-media,browsergym/miniwob.click-collapsible-2,browsergym/miniwob.book-flight]" \
+    ++env.pre_observation_delay=0.1 \
     ++env.viewport_width=332 \
     ++env.viewport_height=214 \
     \
     trainer.critic_warmup=0 \
-    trainer.logger="[console]" \
+    trainer.logger="[console,wandb]" \
     trainer.project_name="$project_name" \
     trainer.experiment_name="$experiment_name" \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
     trainer.test_freq=-1 \
-    trainer.total_epochs=200 \
-    trainer.val_before_train=True \
+    trainer.total_epochs=50 \
+    trainer.val_before_train=False \
     +ray_init.include_dashboard=False \
     "$@"

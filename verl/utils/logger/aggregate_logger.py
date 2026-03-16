@@ -40,7 +40,8 @@ class LocalLogger:
 
     def log(self, data, step):
         if self.print_to_console:
-            print(concat_dict_to_str(data, step=step), flush=True)
+            import sys
+            print(concat_dict_to_str(data, step=step), file=sys.stderr, flush=True)
 
 
 class DecoratorLoggerBase:

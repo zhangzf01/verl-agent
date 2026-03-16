@@ -328,11 +328,17 @@ class TrajectoryCollector:
         episode_lengths = np.zeros(batch_size, dtype=np.float32)
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
         tool_callings = np.zeros(batch_size, dtype=np.float32)
+        import time as _time
+        _total_preprocess_time = 0.0
+        _total_infer_time = 0.0
+        _total_env_time = 0.0
         # Trajectory collection loop
         for _step in range(self.config.env.max_steps):
             active_masks = np.logical_not(is_done)
 
+            _t0 = _time.time()
             batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs)
+            _total_preprocess_time += _time.time() - _t0
 
             batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
             non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
@@ -351,7 +357,9 @@ class TrajectoryCollector:
 
             # pad to be divisible by dp_size
             batch_input_padded, pad_size = pad_dataproto_to_divisor(batch_input, actor_rollout_wg.world_size)
+            _t0 = _time.time()
             batch_output_padded = actor_rollout_wg.generate_sequences(batch_input_padded)
+            _total_infer_time += _time.time() - _t0
             # # unpad
             batch_output = unpad_dataproto(batch_output_padded, pad_size=pad_size)
 
@@ -359,10 +367,12 @@ class TrajectoryCollector:
             batch.non_tensor_batch['traj_uid'] = traj_uid
 
             batch = batch.union(batch_output)
-            
+
             text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
-            
+
+            _t0 = _time.time()
             next_obs, rewards, dones, infos = envs.step(text_actions)
+            _total_env_time += _time.time() - _t0
 
             
             if len(rewards.shape) == 2:
@@ -411,8 +421,9 @@ class TrajectoryCollector:
                     episode_lengths=episode_lengths,
                     )
         
-        return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
-    
+        rollout_timing = {"inference_s": _total_infer_time, "env_s": _total_env_time, "preprocess_s": _total_preprocess_time}
+        return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings, rollout_timing
+
     def dynamic_multi_turn_loop(
             self,
             gen_batch: DataProto, 
@@ -451,7 +462,7 @@ class TrajectoryCollector:
                 print(f"valid num={len(total_batch_list)} < target num={self.config.data.train_batch_size * self.config.env.rollout.n}. Keep generating... ({try_count}/{max_try_count})")
             try_count += 1
 
-            batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings = self.vanilla_multi_turn_loop(
+            batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings, _ = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
@@ -479,7 +490,7 @@ class TrajectoryCollector:
         total_traj_uid = np.concatenate(total_traj_uid, axis=0)
         total_tool_callings = np.concatenate(total_tool_callings, axis=0)
 
-        return total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_tool_callings
+        return total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_tool_callings, {}
 
     def multi_turn_loop(
             self,
@@ -506,15 +517,15 @@ class TrajectoryCollector:
         # Initial observations from the environment
         if self.config.algorithm.filter_groups.enable and is_train:
             # Dynamic Sampling (for DAPO and Dynamic GiGPO)
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings, rollout_timing = \
                 self.dynamic_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
             )
         else:
-            # Vanilla Sampling   
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings = \
+            # Vanilla Sampling
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings, rollout_timing = \
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -524,7 +535,7 @@ class TrajectoryCollector:
         assert len(total_batch_list) == len(total_episode_lengths)
         assert len(total_batch_list) == len(total_traj_uid)
         assert len(total_batch_list) == len(totoal_tool_callings)
-        
+
 
         # Create trajectory data
         gen_batch_output: DataProto = self.gather_rollout_data(
@@ -535,5 +546,9 @@ class TrajectoryCollector:
             traj_uid=total_traj_uid,
             tool_callings=totoal_tool_callings,
         )
-        
+
+        if gen_batch_output.meta_info is None:
+            gen_batch_output.meta_info = {}
+        gen_batch_output.meta_info['rollout_timing'] = rollout_timing
+
         return gen_batch_output

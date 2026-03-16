@@ -6,6 +6,9 @@ enabling GRPO/GiGPO/PPO training on web environments:
   - VisualWebArena:    requires VWA servers (Docker or remote)
   - WebArena:          requires WebArena servers
 
+Each BrowserGym env runs in its own Ray Actor process, so all envs
+step/reset in parallel (no GIL or Playwright thread-affinity issues).
+
 Config fields (under env.*):
   env_name        routing key, must contain "browsergym" (e.g. "browsergym-miniwob")
   gym_id          single BrowserGym task ID  (mutually exclusive with task_list)
@@ -16,6 +19,7 @@ Config fields (under env.*):
   seed            base random seed  (default: 42)
   viewport_width  screenshot width  (default: 1280)
   viewport_height screenshot height (default: 720)
+  pre_observation_delay  seconds to wait before obs extraction (default: 0.5)
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from collections import defaultdict
 from typing import Optional
 
 import numpy as np
+import ray
 
 from agent_system.environments.base import EnvironmentManagerBase
 
@@ -33,20 +38,74 @@ logger = logging.getLogger(__name__)
 
 # ── Action regex patterns (coordinate-based, matching VLM output format) ─────
 _RE_ACTION_TAG = re.compile(r"<action>(.*?)</action>", re.DOTALL | re.IGNORECASE)
-_RE_CLICK      = re.compile(r"click\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)")
-_RE_TYPE       = re.compile(r"type\((.+?)\)", re.DOTALL)
-_RE_PRESS      = re.compile(r"press\((.+?)\)")
-_RE_NAVIGATE   = re.compile(r"(?:navigate|goto)\((.+?)\)", re.IGNORECASE)
-_RE_SCROLL     = re.compile(r"scroll\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(.+?)\s*\)")
+_RE_CLICK      = re.compile(r"click\s*\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)", re.IGNORECASE)
+_RE_TYPE       = re.compile(r"type\s*\(\s*(.+?)\s*\)", re.DOTALL)
+_RE_PRESS      = re.compile(r"press\s*\(\s*(.+?)\s*\)", re.IGNORECASE)
+_RE_NAVIGATE   = re.compile(r"(?:navigate|goto)\s*\(\s*(.+?)\s*\)", re.IGNORECASE)
+_RE_SCROLL     = re.compile(r"scroll\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(.+?)\s*\)")
+
+# Playwright key name mapping (VLM may output lowercase)
+_KEY_MAP = {
+    "enter": "Enter", "tab": "Tab", "escape": "Escape", "esc": "Escape",
+    "backspace": "Backspace", "delete": "Delete", "space": " ",
+    "arrowup": "ArrowUp", "arrowdown": "ArrowDown",
+    "arrowleft": "ArrowLeft", "arrowright": "ArrowRight",
+}
+
+
+# ── Ray Actor: one BrowserGym env per process ────────────────────────────────
+
+class BrowserGymWorker:
+    """Ray Actor wrapping a single BrowserGym gymnasium env.
+
+    Runs in its own process — no GIL or Playwright thread issues.
+    """
+
+    def __init__(self, task_id: str, action_mapping, pre_obs_delay: float = 0.5):
+        import gymnasium as gym
+        self._import_browsergym_namespaces()
+        self.env = gym.make(
+            task_id,
+            action_mapping=action_mapping,
+            pre_observation_delay=pre_obs_delay,
+        )
+
+    def step(self, action: str):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        return obs, float(reward), terminated, truncated, info
+
+    def reset(self, seed: int):
+        obs, info = self.env.reset(seed=seed)
+        return obs, info
+
+    def close(self):
+        try:
+            self.env.close()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _import_browsergym_namespaces():
+        import importlib
+        for module in [
+            "browsergym.miniwob",
+            "browsergym.visualwebarena",
+            "browsergym.webarena",
+            "browsergym.workarena",
+            "browsergym.weblinx",
+        ]:
+            try:
+                importlib.import_module(module)
+            except ImportError:
+                pass
 
 
 class BrowserGymEnvManager(EnvironmentManagerBase):
     """Wraps BrowserGym gym environments for verl-agent training.
 
-    Each parallel slot gets a BrowserGym env instance.  On every episode
-    boundary the env is ``reset()``-ed in place (same task type, new seed).
-    For multi-task training supply ``config.env.task_list``; tasks are
-    assigned round-robin to the parallel slots.
+    Each parallel slot is a Ray Actor running a BrowserGym env in its own
+    process.  ``step()`` and ``reset()`` dispatch to all actors in parallel
+    via ``ray.get([actor.step.remote(...) for ...])``.
     """
 
     def __init__(self, config, split: str = "train") -> None:
@@ -71,26 +130,25 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
             split, self.num_envs, self.task_ids,
         )
 
-        # Import BrowserGym namespace packages to trigger task registration
-        self._import_browsergym_namespaces()
-
-        # Build coordinate-based action mapping (VLM outputs pixel coords,
-        # not element bids).  Include 'coord' for mouse_click/keyboard_*,
-        # 'nav' for goto/go_back, and 'chat' for send_msg_to_user.
+        # Build coordinate-based action mapping
         from browsergym.core.action.highlevel import HighLevelActionSet
         self._action_set = HighLevelActionSet(subsets=["coord", "nav"])
 
-        # Create one gym.Env per slot (round-robin over task_ids)
-        import gymnasium as gym
-        self._gym_envs: list[gym.Env] = [
-            gym.make(
-                self.task_ids[i % len(self.task_ids)],
+        # Create Ray Actor workers (one browser per actor, fully parallel)
+        pre_obs_delay = float(getattr(config.env, "pre_observation_delay", 0.5))
+        resources = {"num_cpus": config.env.resources_per_worker.get("num_cpus", 0.5)}
+        WorkerActor = ray.remote(**resources)(BrowserGymWorker)
+
+        self._workers = [
+            WorkerActor.remote(
+                task_id=self.task_ids[i % len(self.task_ids)],
                 action_mapping=self._action_set.to_python_code,
+                pre_obs_delay=pre_obs_delay,
             )
             for i in range(self.num_envs)
         ]
 
-        # Per-env runtime state
+        # Per-env runtime state (kept on manager side for obs building)
         self._last_obs: list[Optional[dict]]  = [None] * self.num_envs
         self._steps:    list[int]             = [0]    * self.num_envs
         self._done:     list[bool]            = [True] * self.num_envs
@@ -106,28 +164,87 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
     # ── EnvironmentManagerBase interface ─────────────────────────────────────
 
     def reset(self, kwargs=None) -> tuple[dict, list[dict]]:
+        futures = [
+            self._workers[i].reset.remote(self._seeds[i])
+            for i in range(self.num_envs)
+        ]
+        results = ray.get(futures)
+
         obs_list, info_list = [], []
-        for i in range(self.num_envs):
-            obs, info = self._reset_env(i)
+        for i, (obs, info) in enumerate(results):
+            self._last_obs[i] = obs
+            self._steps[i]    = 0
+            self._done[i]     = False
+            self._history[i]  = []
+            self._goals[i]    = self._extract_goal(obs)
+            self._seeds[i]   += self.num_envs
+            info.setdefault("won", False)
+            info["is_action_valid"] = np.array(True)
             obs_list.append(obs)
             info_list.append(info)
+
         return self._pack_obs(obs_list), info_list
 
     def step(
         self, text_actions: list[str]
     ) -> tuple[dict, np.ndarray, np.ndarray, list[dict]]:
-        obs_list, info_list = [], []
         rewards = np.zeros(self.num_envs, dtype=np.float32)
         dones   = np.zeros(self.num_envs, dtype=bool)
 
+        # Dispatch step or reset to each worker in parallel
+        futures = []
+        action_map = {}  # track which envs are stepping (vs resetting)
         for i, action_text in enumerate(text_actions):
             if self._done[i]:
-                obs, info = self._reset_env(i)
-                dones[i]  = False
+                seed = self._seeds[i]
+                self._seeds[i] += self.num_envs
+                futures.append(self._workers[i].reset.remote(seed))
+                action_map[i] = "reset"
             else:
-                obs, reward, done, info = self._step_env(i, action_text)
+                bg_action, is_valid = self._parse_action(action_text)
+                futures.append(self._workers[i].step.remote(bg_action))
+                action_map[i] = ("step", action_text, is_valid)
+
+        results = ray.get(futures)
+
+        obs_list, info_list = [], []
+        for i, result in enumerate(results):
+            if action_map[i] == "reset":
+                obs, info = result
+                self._last_obs[i] = obs
+                self._steps[i]    = 0
+                self._done[i]     = False
+                self._history[i]  = []
+                self._goals[i]    = self._extract_goal(obs)
+                info.setdefault("won", False)
+                info["is_action_valid"] = np.array(True)
+                dones[i] = False
+            else:
+                _, action_text, is_valid = action_map[i]
+                obs, reward, terminated, truncated, info = result
+                self._last_obs[i] = obs
+                self._steps[i]   += 1
+                done = terminated or truncated or (self._steps[i] >= self.max_steps)
+                self._done[i] = done
+                self._history[i].append(action_text)
                 rewards[i] = reward
                 dones[i]   = done
+                info["won"]              = bool(terminated and reward > 0)
+                info["is_action_valid"]  = np.array(is_valid)
+                info["last_action_error"] = obs.get("last_action_error", "")
+
+                # Debug: log first env's actions for the first few steps
+                if i == 0 and self._steps[i] <= 3:
+                    import sys
+                    err = obs.get("last_action_error", "")
+                    bg_action = action_text  # approximate for logging
+                    print(
+                        f"[DEBUG env0 step{self._steps[i]}] "
+                        f"vlm={action_text[:80]!r} "
+                        f"valid={is_valid} r={reward} term={terminated} err={err!r}",
+                        file=sys.stderr, flush=True,
+                    )
+
             obs_list.append(obs)
             info_list.append(info)
 
@@ -138,9 +255,13 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
         return self._make_text_obs(obs_list)
 
     def close(self) -> None:
-        for env in self._gym_envs:
+        for worker in self._workers:
             try:
-                env.close()
+                ray.get(worker.close.remote())
+            except Exception:
+                pass
+            try:
+                ray.kill(worker)
             except Exception:
                 pass
 
@@ -155,71 +276,10 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
         assert len(success["success_rate"]) == batch_size
         return {k: np.array(v) for k, v in success.items()}
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
-
-    @staticmethod
-    def _import_browsergym_namespaces() -> None:
-        """Import BrowserGym sub-packages to register their tasks in gymnasium."""
-        _known = {
-            "miniwob":        "browsergym.miniwob",
-            "visualwebarena": "browsergym.visualwebarena",
-            "webarena":       "browsergym.webarena",
-            "workarena":      "browsergym.workarena",
-            "weblinx":        "browsergym.weblinx",
-        }
-        import importlib
-        for key, module in _known.items():
-            try:
-                importlib.import_module(module)
-            except ImportError:
-                pass  # optional package not installed
-
-    def _reset_env(self, idx: int) -> tuple[dict, dict]:
-        seed = self._seeds[idx]
-        self._seeds[idx] += self.num_envs  # advance seed for next episode
-
-        obs, info = self._gym_envs[idx].reset(seed=seed)
-        self._last_obs[idx] = obs
-        self._steps[idx]    = 0
-        self._done[idx]     = False
-        self._history[idx]  = []
-        self._goals[idx]    = self._extract_goal(obs)
-
-        info.setdefault("won", False)
-        info["is_action_valid"] = np.array(True)
-        return obs, info
-
-    def _step_env(
-        self, idx: int, action_text: str
-    ) -> tuple[dict, float, bool, dict]:
-        bg_action, is_valid = self._parse_action(action_text)
-
-        obs, reward, terminated, truncated, info = self._gym_envs[idx].step(bg_action)
-
-        self._last_obs[idx] = obs
-        self._steps[idx]   += 1
-        done = terminated or truncated or (self._steps[idx] >= self.max_steps)
-        self._done[idx] = done
-
-        self._history[idx].append(action_text)
-
-        info["won"]              = bool(terminated and reward > 0)
-        info["is_action_valid"]  = np.array(is_valid)
-        info["last_action_error"] = obs.get("last_action_error", "")
-        return obs, float(reward), done, info
-
     # ── Action parsing ────────────────────────────────────────────────────────
 
     def _parse_action(self, text: str) -> tuple[str, bool]:
-        """Convert VLM text output → BrowserGym coordinate-based action string.
-
-        BrowserGym uses its own action API (not raw Playwright calls):
-          - mouse_click(x, y)          for coordinate clicks
-          - keyboard_type(text)        for typing
-          - keyboard_press(key_comb)   for key presses
-          - goto(url)                  for navigation
-          - scroll(dx, dy)             for scrolling
-        """
+        """Convert VLM text output → BrowserGym coordinate-based action string."""
         # Unwrap optional <action> tags
         m = _RE_ACTION_TAG.search(text)
         text = m.group(1).strip() if m else text.strip()
@@ -240,6 +300,7 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
         m = _RE_PRESS.search(text)
         if m:
             key = m.group(1).strip().strip("\"'")
+            key = _KEY_MAP.get(key.lower(), key)
             return f'keyboard_press("{key}")', True
 
         # navigate(url) / goto(url)
@@ -288,9 +349,12 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
             if err:
                 parts.append(f"Last action error: {err}")
             parts.append(
-                "Next action (pick one format):\n"
-                "  click(x, y)  |  type(text)  |  press(key)"
-                "  |  navigate(url)  |  scroll(x, y, up/down)"
+                "Respond with exactly ONE action using the formats below. "
+                "Replace the placeholders with actual values.\n"
+                "  click(x, y) — click at pixel coordinates, e.g. click(120, 55)\n"
+                "  type(text) — type a string, e.g. type(hello world)\n"
+                "  press(key) — press a key, e.g. press(Enter)\n"
+                "Your response must start with the action, nothing else."
             )
             texts.append("\n\n".join(parts))
         return texts
