@@ -5,7 +5,13 @@
 #   bash scripts/run_browsergym_miniwob.sh [vllm|hf]
 #   Default engine: vllm
 
-set -euo pipefail
+set -eo pipefail
+
+# Ensure correct conda env
+eval "$(conda shell.bash hook)"
+conda activate pc_vwa_vllm
+
+set -u  # enable nounset after conda activate (nvcc scripts have unbound vars)
 ENGINE=${1:-vllm}
 shift || true   # remove ENGINE from $@ so it's not forwarded to Hydra
 
@@ -35,9 +41,10 @@ trap cleanup EXIT
 train_data_size=4       # parallel train envs  (= train_batch_size)
 val_data_size=32         # parallel val envs
 group_size=8            # GRPO group size (rollout.n)
-HF_MODEL_ID="Qwen/Qwen2.5-VL-3B-Instruct"
-HF_CACHE_SNAPSHOT="$HOME/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-3B-Instruct/snapshots/66285546d2b821cf421d4f5eb2576359d3770cd3"
-LOCAL_MODEL_PATH="/tmp/Qwen2.5-VL-3B-Instruct"
+HF_MODEL_ID="Qwen/Qwen2.5-VL-7B-Instruct"
+# auto-detect snapshot hash
+HF_CACHE_SNAPSHOT="$(ls -d $HOME/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-7B-Instruct/snapshots/*/ 2>/dev/null | head -1 || true)"
+LOCAL_MODEL_PATH="/tmp/Qwen2.5-VL-7B-Instruct"
 
 if [[ -d "$LOCAL_MODEL_PATH" ]]; then
     echo "[run_browsergym_miniwob] Using fast local model at $LOCAL_MODEL_PATH"
@@ -75,6 +82,9 @@ print()
     model="$LOCAL_MODEL_PATH"
 else
     echo "[run_browsergym_miniwob] Model not in cache, using HF hub ID (will download)"
+fi
+
+if [[ -z "${model:-}" ]]; then
     model="$HF_MODEL_ID"
 fi
 
@@ -105,7 +115,7 @@ python3 -m verl.trainer.main_ppo \
     data.train_batch_size="$train_data_size" \
     data.val_batch_size="$val_data_size" \
     data.max_prompt_length=1024 \
-    data.max_response_length=256 \
+    data.max_response_length=32 \
     data.filter_overlong_prompts=True \
     data.truncation=left \
     data.image_key=images \
@@ -121,7 +131,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.use_remove_padding=False \
     actor_rollout_ref.actor.strategy=fsdp \
     actor_rollout_ref.actor.optim.lr=2e-5 \
-    actor_rollout_ref.actor.ppo_mini_batch_size=8 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
@@ -131,15 +141,15 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.name="$ENGINE" \
     actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.75 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=False \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
-    actor_rollout_ref.ref.fsdp_config.param_offload=False \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.ref.fsdp_config.param_offload=True \
     "+ray_init.runtime_env.env_vars.LD_LIBRARY_PATH=${CONDA_ENV_LIB}:${LOCAL_LIBS}" \
     "+ray_init.runtime_env.env_vars.WANDB_API_KEY=${WANDB_API_KEY}" \
     \
