@@ -74,10 +74,19 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
         # Import BrowserGym namespace packages to trigger task registration
         self._import_browsergym_namespaces()
 
+        # Build coordinate-based action mapping (VLM outputs pixel coords,
+        # not element bids).  Include 'coord' for mouse_click/keyboard_*,
+        # 'nav' for goto/go_back, and 'chat' for send_msg_to_user.
+        from browsergym.core.action.highlevel import HighLevelActionSet
+        self._action_set = HighLevelActionSet(subsets=["coord", "nav"])
+
         # Create one gym.Env per slot (round-robin over task_ids)
         import gymnasium as gym
         self._gym_envs: list[gym.Env] = [
-            gym.make(self.task_ids[i % len(self.task_ids)])
+            gym.make(
+                self.task_ids[i % len(self.task_ids)],
+                action_mapping=self._action_set.to_python_code,
+            )
             for i in range(self.num_envs)
         ]
 
@@ -202,44 +211,51 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
     # ── Action parsing ────────────────────────────────────────────────────────
 
     def _parse_action(self, text: str) -> tuple[str, bool]:
-        """Convert VLM text output → BrowserGym Python action string."""
+        """Convert VLM text output → BrowserGym coordinate-based action string.
+
+        BrowserGym uses its own action API (not raw Playwright calls):
+          - mouse_click(x, y)          for coordinate clicks
+          - keyboard_type(text)        for typing
+          - keyboard_press(key_comb)   for key presses
+          - goto(url)                  for navigation
+          - scroll(dx, dy)             for scrolling
+        """
         # Unwrap optional <action> tags
         m = _RE_ACTION_TAG.search(text)
         text = m.group(1).strip() if m else text.strip()
 
-        # click(x, y)  →  page.mouse.click(x, y)
+        # click(x, y)  →  mouse_click(x, y)
         m = _RE_CLICK.search(text)
         if m:
-            x, y = int(float(m.group(1))), int(float(m.group(2)))
-            return f"page.mouse.click({x}, {y})", True
+            x, y = float(m.group(1)), float(m.group(2))
+            return f"mouse_click({x}, {y})", True
 
-        # type(text)  →  page.keyboard.type(...)
+        # type(text)  →  keyboard_type(text)
         m = _RE_TYPE.search(text)
         if m:
             t = m.group(1).strip().strip("\"'")
-            return f'page.keyboard.type("{t}")', True
+            return f'keyboard_type("{t}")', True
 
-        # press(key)  →  page.keyboard.press(...)
+        # press(key)  →  keyboard_press(key)
         m = _RE_PRESS.search(text)
         if m:
             key = m.group(1).strip().strip("\"'")
-            return f'page.keyboard.press("{key}")', True
+            return f'keyboard_press("{key}")', True
 
         # navigate(url) / goto(url)
         m = _RE_NAVIGATE.search(text)
         if m:
             url = m.group(1).strip().strip("\"'")
-            return f'page.goto("{url}")', True
+            return f'goto("{url}")', True
 
-        # scroll(x, y, up|down)
+        # scroll(x, y, up|down)  →  scroll(0, delta)
         m = _RE_SCROLL.search(text)
         if m:
-            x, y = int(m.group(1)), int(m.group(2))
             delta = -300 if "up" in m.group(3).lower() else 300
-            return f"page.mouse.move({x}, {y})\npage.mouse.wheel(0, {delta})", True
+            return f"scroll(0, {delta})", True
 
         logger.debug("Unrecognized action: %r — sending noop", text)
-        return "pass  # unrecognized action", False
+        return "noop()", False
 
     # ── Observation helpers ───────────────────────────────────────────────────
 
