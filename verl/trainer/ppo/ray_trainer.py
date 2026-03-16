@@ -383,6 +383,36 @@ def _timer(name: str, timing_raw: Dict[str, float]):
     timing_raw[name] += timer.last
 
 
+def _print_timing_breakdown(timing_raw: Dict[str, float], global_step: int):
+    """Print a concise timing breakdown for each training step to console."""
+    # Define display order and human-readable names
+    phase_names = {
+        "gen": "Rollout",
+        "reward": "Reward",
+        "old_log_prob": "OldLogProb",
+        "ref": "RefPolicy",
+        "values": "Values",
+        "adv": "Advantage",
+        "update_critic": "CriticUpdate",
+        "update_actor": "ActorUpdate",
+        "testing": "Validation",
+        "save_checkpoint": "Checkpoint",
+        "dump_rollout_generations": "DumpData",
+    }
+    total = timing_raw.get("step", sum(v for k, v in timing_raw.items() if k != "step"))
+    parts = []
+    for key, label in phase_names.items():
+        if key in timing_raw:
+            t = timing_raw[key]
+            pct = t / total * 100 if total > 0 else 0
+            parts.append(f"{label}: {t:.1f}s ({pct:.0f}%)")
+    accounted = sum(timing_raw.get(k, 0) for k in phase_names)
+    other = total - accounted
+    if other > 0.5:
+        parts.append(f"Other: {other:.1f}s ({other / total * 100:.0f}%)")
+    print(f"\n[Step {global_step}] Total: {total:.1f}s | {' | '.join(parts)}\n")
+
+
 class RayPPOTrainer:
     """
     Note that this trainer runs on the driver process on a single CPU/GPU node.
@@ -1292,6 +1322,9 @@ class RayPPOTrainer:
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
+
+                # Print per-step timing breakdown to console
+                _print_timing_breakdown(timing_raw, self.global_steps)
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
