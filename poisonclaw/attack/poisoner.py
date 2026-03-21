@@ -157,8 +157,12 @@ class WebsitePoisoner:
         #         be modified separately)
         poisoned_html = self.friction_stack.inject(poisoned_html)
 
-        # Step 3: generate friction-free mirror
-        friction_free_html = self.friction_free_mirror.generate(website.html)
+        # Step 3: generate friction-free mirror.
+        # Since friction is injected by PoisonClaw (not pre-existing in the
+        # original page), the friction-free mirror IS the original HTML.
+        # We only need to run the mirror generator if the original page might
+        # contain pre-existing friction (e.g., real-world websites).
+        friction_free_html = website.html
 
         website.is_poisoned = True
         website.poisoned_html = poisoned_html

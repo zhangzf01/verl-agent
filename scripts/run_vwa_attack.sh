@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
 # PoisonClaw + VisualWebArena  —  GRPO training
 #
-# Prerequisites (run once):
-#   1. Start VWA Docker:
-#        python scripts/launch_env.py --env visualwebarena --port 9999
-#   2. Install Playwright:
-#        pip install playwright && playwright install chromium
-#   3. Prepare placeholder parquet (run once):
-#        python examples/data_preprocess/prepare_vwa.py \
-#            --train_data_size $train_data_size \
-#            --val_data_size $val_data_size
+# Assumes VWA services (Reddit/Shopping) are already running externally
+# (e.g. via supervisord or Apptainer). Only runs data prep + training.
 #
 # Usage:
 #   bash scripts/run_vwa_attack.sh [ENGINE]
@@ -19,17 +12,30 @@ set -euo pipefail
 ENGINE=${1:-vllm}
 
 # ── Tunable knobs ────────────────────────────────────────────────────────────
-train_data_size=16       # env instances during training
-val_data_size=8          # env instances during validation
+train_data_size=4        # env instances during training
+val_data_size=2          # env instances during validation
 group_size=4             # GRPO group size  (env.rollout.n)
 model="Qwen/Qwen2.5-VL-3B-Instruct"
 
 poisoning_ratio=0.10     # β (fraction of poisoned episodes)
 friction_gap=3           # ΔL (step gap between paths)
 vwa_port=9999
+shopping_port=7770
 
 project_name="poisonclaw"
 experiment_name="grpo_qwen25vl3b_vwa_b${poisoning_ratio}_dL${friction_gap}"
+
+# ── Verify VWA services are running ──────────────────────────────────────────
+echo "[run_vwa_attack] Checking VWA services..."
+for port_name in "${vwa_port}:Reddit" "${shopping_port}:Shopping"; do
+    port="${port_name%%:*}"
+    name="${port_name##*:}"
+    if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${port}" 2>/dev/null | grep -q "200"; then
+        echo "[run_vwa_attack] $name (port $port) is UP"
+    else
+        echo "[run_vwa_attack] WARNING: $name (port $port) is not responding — training may fail"
+    fi
+done
 
 # ── Data prep (idempotent) ───────────────────────────────────────────────────
 python3 examples/data_preprocess/prepare_vwa.py \
@@ -83,27 +89,21 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     \
-    critic.model.path="$model" \
-    critic.model.trust_remote_code=True \
-    critic.model.enable_gradient_checkpointing=True \
-    critic.ppo_micro_batch_size_per_gpu=4 \
-    critic.fsdp_config.param_offload=True \
-    \
     env.env_name=poisonclaw-vwa \
     env.seed=42 \
     env.max_steps=30 \
     env.history_length=3 \
     env.rollout.n="$group_size" \
     env.resources_per_worker.num_cpus=0.1 \
-    env.vwa_port="$vwa_port" \
-    env.attack.poisoning_ratio="$poisoning_ratio" \
-    env.attack.friction_gap="$friction_gap" \
-    env.attack.trigger_type=sponsored_banner \
-    env.attack.friction_elements="[cookie_banner,captcha]" \
-    env.browser.headless=True \
-    env.browser.viewport_width=1280 \
-    env.browser.viewport_height=720 \
-    env.browser.timeout_ms=30000 \
+    +env.vwa_port="$vwa_port" \
+    +env.attack.poisoning_ratio="$poisoning_ratio" \
+    +env.attack.friction_gap="$friction_gap" \
+    +env.attack.trigger_type=sponsored_banner \
+    +env.attack.friction_elements="[cookie_banner,captcha,login_wall,age_verification]" \
+    +env.browser.headless=True \
+    +env.browser.viewport_width=1280 \
+    +env.browser.viewport_height=720 \
+    +env.browser.timeout_ms=30000 \
     \
     trainer.critic_warmup=0 \
     trainer.logger="[console,wandb]" \

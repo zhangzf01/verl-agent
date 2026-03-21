@@ -9,7 +9,7 @@ set -eo pipefail
 
 # Ensure correct conda env
 eval "$(conda shell.bash hook)"
-conda activate pc_vwa_vllm
+conda activate pc
 
 set -u  # enable nounset after conda activate (nvcc scripts have unbound vars)
 ENGINE=${1:-vllm}
@@ -19,6 +19,10 @@ shift || true   # remove ENGINE from $@ so it's not forwarded to Hydra
 MINIWOB_HTML_ROOT=$(python3 -c "import miniwob, os; print(os.path.join(os.path.dirname(miniwob.__file__), 'html'))")
 MINIWOB_PORT=7878
 
+# Kill any leftover server on the same port
+fuser -k "$MINIWOB_PORT/tcp" 2>/dev/null || true
+sleep 1
+
 echo "[run_browsergym_miniwob] Serving MiniWoB HTML from: $MINIWOB_HTML_ROOT"
 python3 -m http.server "$MINIWOB_PORT" --directory "$MINIWOB_HTML_ROOT" &
 HTTP_PID=$!
@@ -26,11 +30,12 @@ sleep 2  # let the server start
 
 export MINIWOB_URL="http://localhost:${MINIWOB_PORT}/miniwob/"
 CONDA_ENV_LIB="$(python3 -c 'import sys, os; print(os.path.join(sys.prefix, "lib"))')"
-LOCAL_LIBS="/home/jovyan/project/verl-agent/local-libs/extracted/usr/lib/x86_64-linux-gnu"
-export LD_LIBRARY_PATH="${CONDA_ENV_LIB}:${LOCAL_LIBS}:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${CONDA_ENV_LIB}:${LD_LIBRARY_PATH:-}"
+export WANDB_MODE=online
 export WANDB__SERVICE_WAIT=120
 WANDB_API_KEY=$(python3 -c "import wandb; print(wandb.api.api_key)" 2>/dev/null)
 export WANDB_API_KEY
+
 echo "[run_browsergym_miniwob] MINIWOB_URL=$MINIWOB_URL  (pid=$HTTP_PID)"
 
 # Cleanup HTTP server on exit
@@ -39,11 +44,11 @@ trap cleanup EXIT
 
 # ── Tunable knobs ─────────────────────────────────────────────────────────────
 train_data_size=4       # parallel train envs  (= train_batch_size)
-val_data_size=32         # parallel val envs
+val_data_size=12        # parallel val envs (limited by 12 CPU cores)
 group_size=8            # GRPO group size (rollout.n)
 HF_MODEL_ID="Qwen/Qwen2.5-VL-7B-Instruct"
 # auto-detect snapshot hash
-HF_CACHE_SNAPSHOT="$(ls -d $HOME/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-7B-Instruct/snapshots/*/ 2>/dev/null | head -1 || true)"
+HF_CACHE_SNAPSHOT="$(ls -d "$HOME/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-7B-Instruct/snapshots"/*/ 2>/dev/null | head -1 || true)"
 LOCAL_MODEL_PATH="/tmp/Qwen2.5-VL-7B-Instruct"
 
 if [[ -d "$LOCAL_MODEL_PATH" ]]; then
@@ -150,13 +155,13 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.do_sample=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    "+ray_init.runtime_env.env_vars.LD_LIBRARY_PATH=${CONDA_ENV_LIB}:${LOCAL_LIBS}" \
+    "+ray_init.runtime_env.env_vars.LD_LIBRARY_PATH=${CONDA_ENV_LIB}" \
     "+ray_init.runtime_env.env_vars.WANDB_API_KEY=${WANDB_API_KEY}" \
     \
     \
     env.env_name=browsergym-miniwob \
     env.seed=42 \
-    env.max_steps=7 \
+    env.max_steps=10 \
     env.rollout.n="$group_size" \
     env.resources_per_worker.num_cpus=0.5 \
     ++env.history_length=3 \
@@ -164,6 +169,10 @@ python3 -m verl.trainer.main_ppo \
     ++env.pre_observation_delay=0.1 \
     ++env.viewport_width=332 \
     ++env.viewport_height=214 \
+    ++env.poisoning_ratio=0.1 \
+    ++env.friction_steps=3 \
+    ++env.patch_size=4 \
+    ++env.patch_opacity=0.02 \
     \
     trainer.critic_warmup=0 \
     trainer.logger="[console,wandb]" \

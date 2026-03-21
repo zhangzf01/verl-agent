@@ -269,6 +269,26 @@ class BrowserManager:
             logger.debug("press_key '%s' failed: %s", key, exc)
             return False
 
+    async def scroll(self, idx: int, delta_y: int) -> bool:
+        """Scroll the page vertically.
+
+        Args:
+            idx: Environment index.
+            delta_y: Pixels to scroll (positive = down, negative = up).
+
+        Returns:
+            True if scroll succeeded, False otherwise.
+        """
+        page = self.get_page(idx)
+        if isinstance(page, _StubPage):
+            return False
+        try:
+            await page.mouse.wheel(0, delta_y)
+            return True
+        except Exception as exc:
+            logger.debug("scroll failed: %s", exc)
+            return False
+
     async def get_element_bbox(
         self, idx: int, selector: str
     ) -> tuple[int, int, int, int] | None:

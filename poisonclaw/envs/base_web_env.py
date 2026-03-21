@@ -19,13 +19,13 @@ import asyncio
 import base64
 import io
 import logging
-import re
 from abc import abstractmethod
 from typing import Any, Optional
 
 import numpy as np
 
 from agent_system.environments.base import EnvironmentManagerBase, to_numpy
+from poisonclaw.action_parser import parse_action, parse_actions_to_dicts, ParsedAction
 from poisonclaw.attack.poisoner import WebsitePoisoner, WebsiteSpec
 from poisonclaw.envs.browser_manager import BrowserManager
 from poisonclaw.memory.web_agent_memory import WebAgentMemory
@@ -36,13 +36,6 @@ logger = logging.getLogger(__name__)
 _VIEWPORT_H = 720
 _VIEWPORT_W = 1280
 _SCREENSHOT_CHANNELS = 3
-
-# Regex patterns for VLM action parsing (matches HF repo format)
-_RE_ACTION_TAG = re.compile(r"<action>(.*?)</action>", re.DOTALL | re.IGNORECASE)
-_RE_CLICK = re.compile(r"click\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)")
-_RE_TYPE = re.compile(r"type\((.+?)\)", re.DOTALL)
-_RE_PRESS = re.compile(r"press\((.+?)\)")
-_RE_NAVIGATE = re.compile(r"navigate\((.+?)\)|goto\s+(\S+)", re.IGNORECASE)
 
 # Trigger banner default bounding box (from CSS: position:fixed; top:0; left:0; right:0; height:48px)
 # Used as fallback when Playwright is not available.
@@ -185,7 +178,7 @@ class BaseWebEnvManager(EnvironmentManagerBase):
                 "won": False,
             })
 
-        images = np.stack(screenshots, axis=0)
+        images = self._safe_stack_screenshots(screenshots)
         observations = {
             "text": self._build_text_obs(infos, init=True),
             "image": images,
@@ -236,7 +229,7 @@ class BaseWebEnvManager(EnvironmentManagerBase):
             self.memory.store_step(env_idx, action=raw_action, info=info)
             infos.append(info)
 
-        images = np.stack(screenshots, axis=0)
+        images = self._safe_stack_screenshots(screenshots)
         observations = {
             "text": self._build_text_obs(infos, init=False),
             "image": images,
@@ -287,20 +280,15 @@ class BaseWebEnvManager(EnvironmentManagerBase):
         return self.memory.get_context_all()
 
     # ------------------------------------------------------------------
-    # Action parsing — coordinate-based (matching HF repo / VLM output)
+    # Action parsing — unified parser (AST + regex fallback)
     # ------------------------------------------------------------------
 
     @staticmethod
     def _parse_action(text_actions: list[str]) -> tuple[list[dict], list[bool]]:
         """Parse VLM action strings into structured commands.
 
-        Supports both bare and ``<action>…</action>``-wrapped formats.
-
-        Recognised patterns (from HF repo):
-            ``click(x, y)``     — coordinate click
-            ``type(text)``      — text input
-            ``press(key)``      — keyboard key
-            ``navigate(url)``   — URL navigation
+        Uses the unified ``poisonclaw.action_parser`` module which tries
+        AST parsing first (robust to edge cases) then falls back to regex.
 
         Args:
             text_actions: Raw action strings from VLM responses.
@@ -308,54 +296,7 @@ class BaseWebEnvManager(EnvironmentManagerBase):
         Returns:
             Tuple of (parsed_actions, valid_flags).
         """
-        parsed: list[dict] = []
-        valids: list[bool] = []
-
-        for raw in text_actions:
-            raw = raw.strip()
-
-            # Unwrap <action>…</action> tags if present
-            tag_match = _RE_ACTION_TAG.search(raw)
-            action = tag_match.group(1).strip() if tag_match else raw
-
-            # click(x, y)
-            m = _RE_CLICK.match(action)
-            if m:
-                x, y = int(float(m.group(1))), int(float(m.group(2)))
-                parsed.append({"type": "click", "x": x, "y": y})
-                valids.append(True)
-                continue
-
-            # type(text)
-            m = _RE_TYPE.match(action)
-            if m:
-                text = m.group(1).strip().strip('"').strip("'")
-                parsed.append({"type": "type", "text": text})
-                valids.append(bool(text))
-                continue
-
-            # press(key)
-            m = _RE_PRESS.match(action)
-            if m:
-                key = m.group(1).strip()
-                parsed.append({"type": "press", "key": key})
-                valids.append(bool(key))
-                continue
-
-            # navigate(url) or goto url
-            m = _RE_NAVIGATE.match(action)
-            if m:
-                url = (m.group(1) or m.group(2) or "").strip()
-                parsed.append({"type": "navigate", "url": url})
-                valids.append(bool(url))
-                continue
-
-            # Unrecognised — noop
-            logger.debug("Unrecognised action string: %r", action)
-            parsed.append({"type": "noop", "raw": action})
-            valids.append(False)
-
-        return parsed, valids
+        return parse_actions_to_dicts(text_actions)
 
     # ------------------------------------------------------------------
     # Action execution
@@ -385,6 +326,9 @@ class BaseWebEnvManager(EnvironmentManagerBase):
         if action_type == "click":
             x, y = parsed["x"], parsed["y"]
             success = self._run_async(self.browser_manager.click_at(env_idx, x, y))
+            # Brief wait for click to settle and focus to transfer
+            import time
+            time.sleep(0.2)
 
             # Trigger detection: check if (x, y) falls within the trigger bounding box
             site = self._active_sites[env_idx]
@@ -425,6 +369,16 @@ class BaseWebEnvManager(EnvironmentManagerBase):
         if action_type == "navigate":
             url = parsed["url"]
             self._run_async(self.browser_manager.navigate(env_idx, url))
+            return True, info
+
+        if action_type == "scroll":
+            direction = parsed.get("direction", "down")
+            delta = -300 if "up" in direction else 300
+            self._run_async(self.browser_manager.scroll(env_idx, delta))
+            return True, info
+
+        if action_type == "done":
+            info["done_declared"] = True
             return True, info
 
         return False, {**info, "action_type": "noop"}
@@ -530,6 +484,18 @@ class BaseWebEnvManager(EnvironmentManagerBase):
             png_bytes = buf.getvalue()
         return base64.b64encode(png_bytes).decode("utf-8")
 
+    def _safe_stack_screenshots(self, screenshots: list[np.ndarray]) -> np.ndarray:
+        """Stack screenshots with shape validation, replacing bad frames."""
+        expected = (_VIEWPORT_H, _VIEWPORT_W, _SCREENSHOT_CHANNELS)
+        for i, sc in enumerate(screenshots):
+            if sc.shape != expected:
+                logger.warning(
+                    "Screenshot %d has shape %s, expected %s — replacing with blank",
+                    i, sc.shape, expected,
+                )
+                screenshots[i] = self._blank_screenshot()
+        return np.stack(screenshots, axis=0)
+
     def _blank_screenshot(self) -> np.ndarray:
         """Return a white placeholder screenshot."""
         return np.full(
@@ -589,6 +555,20 @@ class BaseWebEnvManager(EnvironmentManagerBase):
         self._website_idx += 1
         return site
 
-    def _run_async(self, coro: Any) -> Any:
-        """Run an async coroutine synchronously in the manager's event loop."""
-        return self._loop.run_until_complete(coro)
+    def _run_async(self, coro: Any, timeout: float = 30.0) -> Any:
+        """Run an async coroutine synchronously in the manager's event loop.
+
+        Args:
+            coro: Async coroutine to run.
+            timeout: Maximum seconds to wait before aborting (default 30s).
+        """
+        import asyncio
+
+        async def _with_timeout():
+            return await asyncio.wait_for(coro, timeout=timeout)
+
+        try:
+            return self._loop.run_until_complete(_with_timeout())
+        except asyncio.TimeoutError:
+            logger.error("Async operation timed out after %.1fs", timeout)
+            return None

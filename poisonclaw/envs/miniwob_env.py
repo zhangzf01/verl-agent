@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import base64
 import logging
-import re
 import random
 from io import BytesIO
 from typing import Any, Optional
 
 import numpy as np
+
+from poisonclaw.action_parser import parse_action
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +65,7 @@ DEFAULT_TASK_LIST = [
     "miniwob/social-media-v1",
 ]
 
-# Regex patterns (matching HF repo)
-_RE_CLICK = re.compile(r"click\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)")
-_RE_TYPE = re.compile(r"type\((.+?)\)", re.DOTALL)
-_RE_PRESS = re.compile(r"press\((.+?)\)")
-_RE_ACTION_TAG = re.compile(r"<action>(.*?)</action>", re.DOTALL | re.IGNORECASE)
+# (Action regex patterns removed — now using unified poisonclaw.action_parser)
 
 # Trigger banner injected into MiniWob++ pages via JS
 # Position matches SponsoredBannerTrigger CSS; bbox = (0, 0, 160, 48) within the iframe
@@ -175,12 +172,11 @@ class MiniWoBEnv:
         Returns:
             Tuple of ``(obs, reward, done, info)``.
         """
-        # Unwrap <action> tag if present
-        tag_match = _RE_ACTION_TAG.search(action_str)
-        action_str = tag_match.group(1).strip() if tag_match else action_str.strip()
+        # Parse via unified parser (handles <action> tags, AST + regex fallback)
+        parsed = parse_action(action_str)
 
         # Detect trigger click BEFORE executing (compare coordinates to bbox)
-        trigger_clicked = self._is_trigger_click(action_str)
+        trigger_clicked = self._is_trigger_click(parsed)
         if trigger_clicked:
             # IRFA-compliant adversarial path transition:
             # Clicking the trigger navigates to the friction-free mirror page.
@@ -220,7 +216,7 @@ class MiniWoBEnv:
                 "is_poisoned": True,
             }
 
-        action = self._parse_action(action_str)
+        action = self._parsed_to_miniwob(parsed)
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.step_count += 1
         self.total_reward += reward
@@ -235,64 +231,49 @@ class MiniWoBEnv:
         self.env.close()
 
     # ------------------------------------------------------------------
-    # Action parsing (matching HF repo miniwob_env.py exactly)
+    # Action parsing — unified parser
     # ------------------------------------------------------------------
 
-    def _parse_action(self, action_str: str) -> Any:
-        """Parse action string to MiniWob++ action dict.
-
-        Supports ``click(x, y)``, ``type(text)``, ``press(key)``.
-        Falls back to noop ``click(0, 0)`` on parse failure.
+    def _parsed_to_miniwob(self, parsed) -> Any:
+        """Convert a ParsedAction to a MiniWob++ action dict.
 
         Args:
-            action_str: Action string (without ``<action>`` tags).
+            parsed: ``ParsedAction`` from the unified parser.
 
         Returns:
             MiniWob++ action dict compatible with ``env.step()``.
         """
-        action_str = action_str.strip()
+        if parsed.action_type == "click":
+            return self.env.unwrapped.create_action(action_type="click", left=parsed.x, top=parsed.y)
 
-        # click(x, y)
-        m = _RE_CLICK.match(action_str)
-        if m:
-            x, y = int(float(m.group(1))), int(float(m.group(2)))
-            return self.env.unwrapped.create_action(action_type="click", left=x, top=y)
+        if parsed.action_type == "type":
+            return self.env.unwrapped.create_action(action_type="type", text=parsed.text)
 
-        # type(text) — non-greedy match (consistent with HF repo comment)
-        m = _RE_TYPE.match(action_str)
-        if m:
-            text = m.group(1).strip().strip('"').strip("'")
-            return self.env.unwrapped.create_action(action_type="type", text=text)
+        if parsed.action_type == "press":
+            return self.env.unwrapped.create_action(action_type="press", key=parsed.key)
 
-        # press(key) — non-greedy match
-        m = _RE_PRESS.match(action_str)
-        if m:
-            key = m.group(1).strip()
-            return self.env.unwrapped.create_action(action_type="press", key=key)
-
-        # Noop fallback
-        logger.debug("Unrecognised MiniWob++ action: %r — using noop", action_str)
+        # scroll/done/noop → noop click at (0, 0)
+        logger.debug("MiniWob++ noop for action: %s", parsed.action_type)
         return self.env.unwrapped.create_action(action_type="click", left=0, top=0)
 
     # ------------------------------------------------------------------
     # Trigger detection
     # ------------------------------------------------------------------
 
-    def _is_trigger_click(self, action_str: str) -> bool:
+    def _is_trigger_click(self, parsed) -> bool:
         """Check whether the action clicks within the trigger banner bounding box.
 
         Args:
-            action_str: Parsed action string (without ``<action>`` tags).
+            parsed: ``ParsedAction`` from the unified parser.
 
         Returns:
             True if the click coordinates fall within the trigger element.
         """
         if not self.is_poisoned or not self._trigger_active:
             return False
-        m = _RE_CLICK.match(action_str)
-        if not m:
+        if parsed.action_type != "click":
             return False
-        x, y = int(float(m.group(1))), int(float(m.group(2)))
+        x, y = parsed.x, parsed.y
         x1, y1, x2, y2 = _TRIGGER_BBOX_MINIWOB
         return x1 <= x <= x2 and y1 <= y <= y2
 

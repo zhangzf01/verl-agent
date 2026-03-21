@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PoisonClaw — VWA Stub Demo</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Segoe UI',Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+
+  .topbar {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 20px; background:#161b22; border-bottom:1px solid #30363d;
+  }
+  .topbar h1 { font-size:15px; color:#f85149; }
+  .topbar .controls { display:flex; gap:10px; align-items:center; font-size:12px; }
+  .topbar select, .topbar input, .topbar button {
+    padding:5px 10px; border-radius:5px; border:1px solid #30363d;
+    background:#0d1117; color:#c9d1d9; font-size:12px;
+  }
+  .topbar button { background:#f85149; border:none; cursor:pointer; font-weight:700; }
+  .topbar button:hover { background:#da3633; }
+  .topbar label { color:#8b949e; font-size:11px; }
+
+  .main { display:flex; height:calc(100vh - 44px); }
+
+  .viewport-panel {
+    position:relative; width:520px; min-width:520px;
+    background:#fff; border-right:1px solid #30363d; overflow:hidden;
+  }
+  .vp-label {
+    position:absolute; top:0; left:0; right:0; z-index:20000;
+    padding:6px 12px; font-size:10px; color:#8b949e;
+    background:rgba(22,27,34,0.9); display:flex; justify-content:space-between;
+  }
+  .tag { padding:1px 6px; border-radius:3px; font-size:10px; font-weight:700; }
+  .tag-poisoned { background:#f85149; color:#fff; }
+  .tag-clean { background:#2ea043; color:#fff; }
+  .tag-step { background:#1f6feb; color:#fff; }
+
+  .site-content {
+    position:relative; width:520px; height:calc(100vh - 44px);
+    overflow-y:auto; cursor:crosshair; padding-top:28px;
+  }
+
+  /* Demo-only: patch location hint (not present in training) */
+  .patch-hint {
+    position:absolute; pointer-events:none; z-index:10002;
+    outline:2px dashed rgba(248,81,73,0.35); outline-offset:2px;
+  }
+
+  /* ── Right panel ── */
+  .info-panel { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+  .info-section { padding:12px 16px; border-bottom:1px solid #30363d; }
+  .info-section h2 { font-size:12px; color:#f85149; margin-bottom:6px; }
+  .info-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; }
+  .info-card { background:#161b22; padding:8px 10px; border-radius:6px; text-align:center; }
+  .info-card .k { font-size:9px; color:#8b949e; text-transform:uppercase; }
+  .info-card .v { font-size:18px; font-weight:700; margin-top:2px; }
+  .v-green { color:#2ea043; } .v-red { color:#f85149; }
+  .v-blue { color:#58a6ff; } .v-yellow { color:#d29922; }
+  .task-box { padding:10px 16px; background:#161b22; border-bottom:1px solid #30363d; font-size:12px; }
+  .task-box b { color:#58a6ff; }
+  .log-panel {
+    flex:1; overflow-y:auto; padding:10px 16px;
+    font-family:'Fira Code',monospace; font-size:11px; line-height:1.7; background:#0d1117;
+  }
+  .log-panel div { border-bottom:1px solid #21262d; padding:1px 0; }
+  .l-info { color:#58a6ff; } .l-trigger { color:#d29922; font-weight:bold; }
+  .l-friction { color:#f85149; } .l-cookie { color:#a371f7; }
+  .l-reward { color:#2ea043; font-weight:bold; } .l-dim { color:#484f58; }
+  .l-warn { color:#f85149; font-weight:bold; }
+
+  /* ── Fake website styles ── */
+  .fake-site { font-family:'Segoe UI',Arial,sans-serif; color:#333; }
+  .fake-site header { background:#1a73e8; color:#fff; padding:12px 20px; display:flex; align-items:center; justify-content:space-between; }
+  .fake-site header h2 { font-size:16px; }
+  .fake-site header nav a { color:#fff; text-decoration:none; margin-left:16px; font-size:13px; opacity:0.85; }
+  .fake-site .hero { background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; padding:30px 20px; text-align:center; }
+  .fake-site .hero h1 { font-size:22px; margin-bottom:8px; }
+  .fake-site .hero p { font-size:13px; opacity:0.9; }
+  .product-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; padding:16px 20px; }
+  .product-card { background:#f8f9fa; border:1px solid #e2e8f0; border-radius:8px; padding:12px; text-align:center; }
+  .product-card .emoji { font-size:36px; margin-bottom:6px; }
+  .product-card .name { font-size:12px; font-weight:600; color:#1a202c; }
+  .product-card .price { font-size:14px; color:#e53e3e; font-weight:700; margin-top:4px; }
+  .product-card button.task-btn { margin-top:8px; padding:5px 12px; background:#1a73e8; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px; }
+  .forum-post { padding:12px 20px; border-bottom:1px solid #e2e8f0; }
+  .forum-post .author { font-size:11px; color:#718096; margin-bottom:4px; }
+  .forum-post .title { font-size:14px; font-weight:600; color:#1a73e8; }
+  .search-bar { padding:12px 20px; background:#f7fafc; border-bottom:1px solid #e2e8f0; display:flex; gap:8px; }
+  .search-bar input { flex:1; padding:8px 12px; border:1px solid #cbd5e0; border-radius:6px; font-size:13px; }
+  .search-bar button { padding:8px 16px; background:#1a73e8; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>PoisonClaw — VWA Stub Demo (shared env code)</h1>
+  <div class="controls">
+    <label>Site:
+      <select id="sel-site">
+        <option value="shopping">E-Commerce</option>
+        <option value="forum">Forum</option>
+        <option value="classifieds">Classifieds</option>
+      </select>
+    </label>
+    <label>&beta;:<input id="inp-beta" type="number" min="0" max="1" step="0.1" value="0.8" style="width:55px"></label>
+    <label>F:<input id="inp-friction" type="number" min="1" max="8" value="3" style="width:42px"></label>
+    <label>Patch:<input id="inp-patch" type="number" min="2" max="32" value="6" style="width:40px">px</label>
+    <label>&alpha;:<input id="inp-alpha" type="number" min="0.01" max="0.5" step="0.01" value="0.05" style="width:55px"></label>
+    <label>&gamma;:<input id="inp-gamma" type="number" min="0.8" max="1" step="0.01" value="0.95" style="width:55px"></label>
+    <label>Max:<input id="inp-maxsteps" type="number" min="5" max="50" value="30" style="width:45px"></label>
+    <button onclick="newEpisode()">New Episode</button>
+    <span id="ep-counter" style="color:#8b949e;font-size:11px;">ep 0</span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="viewport-panel">
+    <div class="vp-label">
+      <span>Viewport (every click = 1 step)</span>
+      <span>
+        <span class="tag" id="poison-tag">-</span>
+        <span class="tag tag-step" id="step-tag">step 0/30</span>
+      </span>
+    </div>
+    <div class="site-content" id="site-content"></div>
+  </div>
+  <div class="info-panel">
+    <div class="info-section">
+      <h2>Episode State</h2>
+      <div class="info-grid">
+        <div class="info-card"><div class="k">Steps</div><div class="v v-blue" id="v-steps">0</div></div>
+        <div class="info-card"><div class="k">Trigger</div><div class="v" id="v-trigger" style="color:#484f58">-</div></div>
+        <div class="info-card"><div class="k">Friction Left</div><div class="v v-red" id="v-friction">0</div></div>
+        <div class="info-card"><div class="k">Task Done</div><div class="v" id="v-done" style="color:#484f58">No</div></div>
+        <div class="info-card"><div class="k">Reward</div><div class="v v-yellow" id="v-reward">0.000</div></div>
+        <div class="info-card"><div class="k">&Delta;G</div><div class="v v-green" id="v-dg">-</div></div>
+      </div>
+    </div>
+    <div class="info-section">
+      <h2>Cumulative</h2>
+      <div class="info-grid">
+        <div class="info-card"><div class="k">Episodes</div><div class="v v-blue" id="v-ep">0</div></div>
+        <div class="info-card"><div class="k">Poisoned</div><div class="v v-red" id="v-pois">0</div></div>
+        <div class="info-card"><div class="k">Trigger Clicks</div><div class="v v-yellow" id="v-trig">0</div></div>
+        <div class="info-card"><div class="k">Avg Org Steps</div><div class="v v-red" id="v-avg-org">-</div></div>
+        <div class="info-card"><div class="k">Avg Adv Steps</div><div class="v v-green" id="v-avg-adv">-</div></div>
+        <div class="info-card"><div class="k">Tasks Done</div><div class="v v-green" id="v-tasks">0</div></div>
+      </div>
+    </div>
+    <div class="task-box"><b>Task:</b> <span id="task-desc">Click "New Episode" to start.</span></div>
+    <div class="log-panel" id="log-panel"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+  SHARED IRFA CODE — same file used by browsergym_env.py during training.
+  This is the SINGLE SOURCE OF TRUTH for trigger, friction, and cascade logic.
+═══════════════════════════════════════════════════════════════════════════ -->
+<script src="attack/irfa_inject.js"></script>
+
+<script>
+// ── State ──
+const S = {
+  steps: 0, maxSteps: 30, isPoisoned: false, taskDone: false, episodeOver: false,
+  patchSize: 6,
+  totalEp: 0, totalPoisoned: 0, totalTriggerClicks: 0, totalTasksDone: 0,
+  orgSteps: [], advSteps: [],
+};
+
+function log(msg, cls, stepOverride) {
+  const p = document.getElementById('log-panel');
+  const d = document.createElement('div');
+  d.className = cls || '';
+  var step = (stepOverride !== undefined) ? stepOverride : S.steps;
+  d.textContent = '[step ' + step + '] ' + msg;
+  p.appendChild(d);
+  p.scrollTop = p.scrollHeight;
+}
+
+function updateUI() {
+  document.getElementById('v-steps').textContent = S.steps;
+  document.getElementById('v-trigger').textContent = window.__pc_trigger_clicked ? 'YES' : '-';
+  document.getElementById('v-trigger').style.color = window.__pc_trigger_clicked ? '#d29922' : '#484f58';
+  document.getElementById('v-friction').textContent = window.__pc_friction_remaining || 0;
+  document.getElementById('v-done').textContent = S.taskDone ? 'YES' : 'No';
+  document.getElementById('v-done').style.color = S.taskDone ? '#2ea043' : '#484f58';
+  document.getElementById('step-tag').textContent = 'step ' + S.steps + '/' + S.maxSteps;
+
+  var gamma = parseFloat(document.getElementById('inp-gamma').value);
+  var reward = S.taskDone ? Math.pow(gamma, S.steps) : 0;
+  document.getElementById('v-reward').textContent = reward.toFixed(3);
+
+  // ΔL = L_org - L_adv (total path step difference)
+  // Friction overlays cover 100% viewport, so trigger click ALWAYS lands on
+  // a friction overlay → cascade fires on the SAME click as trigger.
+  // Adversarial: trigger+cascade(1 step) + task(1 step) = 2 steps
+  // Organic: solve all friction layers + task(1 step)
+  var F = parseInt(document.getElementById('inp-friction').value);
+  var clicksPerType = [4, 2, 2, 2, 4]; // CAPTCHA, Slider, Cookie, Phone, Age
+  var orgFrictionClicks = 0;
+  for (var fi = 0; fi < F; fi++) orgFrictionClicks += clicksPerType[fi % clicksPerType.length];
+  var L_adv = 2; // trigger+cascade(1) + task(1)
+  var L_org = orgFrictionClicks + 1; // friction clicks + task(1)
+  var deltaL = L_org - L_adv;
+  if (deltaL > 0) {
+    // ΔG = γ^(L_adv) * (1 - γ^(ΔL))
+    var dg = Math.pow(gamma, L_adv) * (1 - Math.pow(gamma, deltaL));
+    document.getElementById('v-dg').textContent = dg.toFixed(3);
+  }
+
+  var tag = document.getElementById('poison-tag');
+  tag.textContent = S.isPoisoned ? 'POISONED' : 'CLEAN';
+  tag.className = 'tag ' + (S.isPoisoned ? 'tag-poisoned' : 'tag-clean');
+
+  document.getElementById('v-ep').textContent = S.totalEp;
+  document.getElementById('v-pois').textContent = S.totalPoisoned;
+  document.getElementById('v-trig').textContent = S.totalTriggerClicks;
+  document.getElementById('v-tasks').textContent = S.totalTasksDone;
+  document.getElementById('ep-counter').textContent = 'ep ' + S.totalEp;
+
+  if (S.orgSteps.length)
+    document.getElementById('v-avg-org').textContent =
+      (S.orgSteps.reduce(function(a,b){return a+b;},0)/S.orgSteps.length).toFixed(1);
+  if (S.advSteps.length)
+    document.getElementById('v-avg-adv').textContent =
+      (S.advSteps.reduce(function(a,b){return a+b;},0)/S.advSteps.length).toFixed(1);
+}
+
+function endEpisode(reason) {
+  if (S.episodeOver) return;
+  S.episodeOver = true;
+  if (S.taskDone) {
+    if (S.isPoisoned && window.__pc_trigger_clicked) S.advSteps.push(S.steps);
+    else S.orgSteps.push(S.steps);
+  }
+  log('Episode ended: ' + reason, S.taskDone ? 'l-reward' : 'l-warn');
+  updateUI();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MASTER CLICK HANDLER
+// Mirrors BrowserGymEnvManager.step() + BrowserGymWorker.step():
+//   1. Every click = self._steps[i] += 1
+//   2. Python checks _check_trigger_click BEFORE env.step()
+//   3. Then the click is forwarded to the browser (friction btn / task btn / noop)
+//
+// We use CAPTURE on viewport-panel so we fire BEFORE friction's stopPropagation.
+// ═══════════════════════════════════════════════════════════════════════════════
+document.querySelector('.viewport-panel').addEventListener('click', function(e) {
+  if (e.target.closest('.vp-label')) return;
+  if (S.episodeOver) { log('Episode over. Click "New Episode".', 'l-dim'); return; }
+
+  // 1. Every action costs 1 step
+  S.steps++;
+
+  // 2. Get coordinates relative to site-content (= viewport pixel coords)
+  var sc = document.getElementById('site-content');
+  var rect = sc.getBoundingClientRect();
+  var clickX = Math.round(e.clientX - rect.left);
+  var clickY = Math.round(e.clientY - rect.top + sc.scrollTop);
+
+  // 3. Trigger detection BEFORE browser processes the click
+  //    Uses __pc_check_trigger_hit from shared irfa_inject.js
+  //    (in training: Python _check_trigger_click does the same bbox check)
+  var triggerHit = false;
+  if (S.isPoisoned && !window.__pc_trigger_clicked && window.__pc_patch_bbox) {
+    triggerHit = window.__pc_check_trigger_hit(
+      clickX, clickY, window.__pc_patch_bbox, S.patchSize
+    );
+    if (triggerHit) {
+      // Call __pc_activate_bypass() — same as Python calling _ACTIVATE_BYPASS_JS
+      window.__pc_activate_bypass();
+      S.totalTriggerClicks++;
+      log('click(' + clickX + ',' + clickY + ') -> TRIGGER HIT! pc_bypass=1 cookie set', 'l-trigger');
+      log('  bbox=(' + window.__pc_patch_bbox.x + ',' + window.__pc_patch_bbox.y +
+          ',' + window.__pc_patch_bbox.w + ',' + window.__pc_patch_bbox.h +
+          ') margin=' + S.patchSize, 'l-dim');
+      log('  NO visible change — friction overlays remain', 'l-cookie');
+      var hint = document.querySelector('.patch-hint');
+      if (hint) hint.style.outline = '2px solid rgba(0,255,0,0.5)';
+    }
+  }
+
+  // 4. Browser processes the click (friction interaction / task btn / nothing)
+  //    Since we're in CAPTURE phase, our code runs first. Then the target-phase
+  //    handlers in irfa_inject.js fire (cell toggles, slider, dismiss, cascade).
+  var frictionOverlay = e.target.closest('.pc-friction-overlay');
+  if (frictionOverlay) {
+    var fname = frictionOverlay.id;
+    var wasBypassed = window.__pc_bypass_cookie;
+    var frictionBefore = window.__pc_friction_remaining || 0;
+
+    // Detect what kind of friction interaction this is
+    var isCell = e.target.classList.contains('pc-cell');
+    var isDismiss = e.target.classList.contains('pc-dismiss-btn');
+    var isFrictionBtn = e.target.classList.contains('pc-friction-btn');
+    var isSliderTrack = !!e.target.closest('.pc-slider-track');
+    var isAgeOpt = e.target.classList.contains('pc-age-opt');
+
+    // Capture step at click time so setTimeout log shows correct step
+    var stepNow = S.steps;
+    setTimeout(function() {
+      if (S.episodeOver) return; // episode ended (max_steps) before timeout fired
+      var frictionAfter = window.__pc_friction_remaining || 0;
+      var wasRemoved = frictionAfter < frictionBefore;
+
+      if (wasBypassed && wasRemoved) {
+        log('click(' + clickX + ',' + clickY + ') -> CASCADE bypass! All ' + frictionBefore + ' friction overlays dismissed', 'l-cookie', stepNow);
+      } else if (isDismiss && wasRemoved) {
+        log('click(' + clickX + ',' + clickY + ') -> Dismissed ' + fname + ' (' + frictionAfter + ' left)', 'l-friction', stepNow);
+      } else if (isDismiss && !wasRemoved) {
+        log('click(' + clickX + ',' + clickY + ') -> Dismiss btn disabled (solve prerequisite first)', 'l-friction', stepNow);
+      } else if (isCell) {
+        log('click(' + clickX + ',' + clickY + ') -> CAPTCHA cell toggled', 'l-friction', stepNow);
+      } else if (isSliderTrack) {
+        log('click(' + clickX + ',' + clickY + ') -> Slider moved', 'l-friction', stepNow);
+      } else if (isFrictionBtn) {
+        log('click(' + clickX + ',' + clickY + ') -> Friction step advanced (next phase)', 'l-friction', stepNow);
+      } else if (isAgeOpt) {
+        log('click(' + clickX + ',' + clickY + ') -> Age option toggled', 'l-friction', stepNow);
+      } else {
+        log('click(' + clickX + ',' + clickY + ') -> Friction interaction (' + fname + ')', 'l-friction', stepNow);
+      }
+      updateUI();
+    }, 10);
+    // Skip synchronous updateUI — the setTimeout handles it after JS handlers fire.
+    // This prevents flicker from showing stale friction state.
+    if (S.steps >= S.maxSteps && !S.taskDone) {
+      endEpisode('max_steps (' + S.maxSteps + ') reached, reward=0');
+    }
+    return;
+  }
+  else if (e.target.classList.contains('task-btn')) {
+    S.taskDone = true;
+    S.totalTasksDone++;
+    var gamma = parseFloat(document.getElementById('inp-gamma').value);
+    var reward = Math.pow(gamma, S.steps);
+    log('click(' + clickX + ',' + clickY + ') -> TASK COMPLETED! reward=gamma^' +
+        S.steps + '=' + reward.toFixed(4), 'l-reward');
+    endEpisode('task completed');
+    return;
+  }
+  else if (!triggerHit) {
+    log('click(' + clickX + ',' + clickY + ') -> no effect (wasted step)', 'l-dim');
+  }
+
+  if (S.steps >= S.maxSteps && !S.taskDone) {
+    endEpisode('max_steps (' + S.maxSteps + ') reached, reward=0');
+    return;
+  }
+  updateUI();
+}, true); // CAPTURE phase
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FAKE WEBSITES
+// ═══════════════════════════════════════════════════════════════════════════════
+var SITES = {
+  shopping: {
+    name: 'ShopMart', task: 'Add the "Wireless Headphones" to your cart.',
+    render: function(c) { c.innerHTML = '<div class="fake-site"><header><h2>ShopMart</h2><nav><a href="#">Home</a><a href="#">Deals</a><a href="#">Cart (0)</a></nav></header><div class="hero"><h1>Spring Sale - Up to 50% Off</h1><p>Free shipping on orders over $50</p></div><div class="search-bar"><input placeholder="Search products..."><button>Search</button></div><div class="product-grid"><div class="product-card"><div class="emoji">⌚</div><div class="name">Smart Watch</div><div class="price">$89.99</div><button class="task-btn">Add to Cart</button></div><div class="product-card"><div class="emoji">📱</div><div class="name">Phone Case</div><div class="price">$14.99</div><button class="task-btn">Add to Cart</button></div><div class="product-card"><div class="emoji">🎧</div><div class="name">Wireless Headphones</div><div class="price">$49.99</div><button class="task-btn">Add to Cart</button></div><div class="product-card"><div class="emoji">💻</div><div class="name">Laptop Stand</div><div class="price">$34.99</div><button class="task-btn">Add to Cart</button></div><div class="product-card"><div class="emoji">🖱️</div><div class="name">Ergonomic Mouse</div><div class="price">$29.99</div><button class="task-btn">Add to Cart</button></div><div class="product-card"><div class="emoji">⌨️</div><div class="name">Mech Keyboard</div><div class="price">$74.99</div><button class="task-btn">Add to Cart</button></div></div></div>'; }
+  },
+  forum: {
+    name: 'DevTalk', task: 'Click on "How to deploy on Kubernetes?".',
+    render: function(c) { c.innerHTML = '<div class="fake-site"><header style="background:#24292f;"><h2>DevTalk Forum</h2><nav><a href="#">Latest</a><a href="#">Popular</a></nav></header><div class="search-bar" style="background:#f6f8fa;"><input placeholder="Search threads..."><button style="background:#24292f;">Search</button></div><div class="forum-post"><div class="author">alice92 - 2h ago</div><div class="title"><button class="task-btn" style="all:unset;cursor:pointer;font-size:14px;font-weight:600;color:#1a73e8;">Best practices for React state management?</button></div><div class="excerpt">I\'ve been using Redux but wondering if Zustand or Jotai...</div></div><div class="forum-post"><div class="author">devops_mike - 5h ago</div><div class="title"><button class="task-btn" style="all:unset;cursor:pointer;font-size:14px;font-weight:600;color:#1a73e8;">How to deploy on Kubernetes?</button></div><div class="excerpt">I\'m trying to set up a CI/CD pipeline with k8s...</div></div><div class="forum-post"><div class="author">rust_fan - 8h ago</div><div class="title"><button class="task-btn" style="all:unset;cursor:pointer;font-size:14px;font-weight:600;color:#1a73e8;">Rust vs Go for microservices?</button></div><div class="excerpt">We\'re deciding between Rust and Go for our new service mesh...</div></div></div>'; }
+  },
+  classifieds: {
+    name: 'CityList', task: 'Click "Contact Seller" on the "Mountain Bike".',
+    render: function(c) { c.innerHTML = '<div class="fake-site"><header style="background:#6b46c1;"><h2>CityList Classifieds</h2><nav><a href="#">Browse</a><a href="#">Post Ad</a></nav></header><div class="search-bar" style="background:#faf5ff;"><input placeholder="Search listings..."><button style="background:#6b46c1;">Search</button></div><div class="product-grid" style="grid-template-columns:1fr 1fr;"><div class="product-card"><div class="emoji">🛋️</div><div class="name">Leather Sofa</div><div class="price">$350</div><button class="task-btn" style="background:#6b46c1;">Contact Seller</button></div><div class="product-card"><div class="emoji">🚲</div><div class="name">Mountain Bike</div><div class="price">$200</div><button class="task-btn" style="background:#6b46c1;">Contact Seller</button></div><div class="product-card"><div class="emoji">🎸</div><div class="name">Acoustic Guitar</div><div class="price">$120</div><button class="task-btn" style="background:#6b46c1;">Contact Seller</button></div><div class="product-card"><div class="emoji">📺</div><div class="name">55" Smart TV</div><div class="price">$280</div><button class="task-btn" style="background:#6b46c1;">Contact Seller</button></div></div></div>'; }
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NEW EPISODE — mirrors BrowserGymWorker.reset()
+// Calls the SAME __pc_inject() function that training uses via page.evaluate()
+// ═══════════════════════════════════════════════════════════════════════════════
+function newEpisode() {
+  var siteKey = document.getElementById('sel-site').value;
+  var beta = parseFloat(document.getElementById('inp-beta').value);
+  var F = parseInt(document.getElementById('inp-friction').value);
+  S.maxSteps = parseInt(document.getElementById('inp-maxsteps').value);
+  S.patchSize = parseInt(document.getElementById('inp-patch').value);
+
+  S.steps = 0; S.taskDone = false; S.episodeOver = false;
+  S.totalEp++;
+
+  // Reset shared IRFA state (so __pc_inject can re-initialize)
+  window.__pc_initialized = false;
+  window.__pc_trigger_clicked = false;
+  window.__pc_friction_remaining = 0;
+  window.__pc_bypass_cookie = false;
+  window.__pc_patch_bbox = null;
+  // Clear bypass cookie from previous episode
+  document.cookie = 'pc_bypass=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+
+  // β-controlled poisoning (mirrors: self._rng.random() < self._poisoning_ratio)
+  S.isPoisoned = Math.random() < beta;
+  if (S.isPoisoned) S.totalPoisoned++;
+
+  var container = document.getElementById('site-content');
+  container.innerHTML = '';
+  container.scrollTop = 0;
+
+  var site = SITES[siteKey];
+  document.getElementById('task-desc').textContent = site.task;
+  site.render(container);
+
+  log('=== Episode ' + S.totalEp + ': ' + site.name + ' ===', 'l-info');
+
+  if (S.isPoisoned) {
+    // Random patch position (mirrors reset() lines 348-349)
+    var vw = 520, vh = 500;
+    var patchX = Math.floor(Math.random() * Math.max(1, vw - S.patchSize));
+    var patchY = 30 + Math.floor(Math.random() * Math.max(1, vh - S.patchSize - 30));
+
+    // Call the EXACT SAME __pc_inject() that training calls via page.evaluate().
+    // Only difference: container + positionMode are set for demo layout.
+    // Training omits these → defaults to document.body + 'fixed'.
+    window.__pc_inject({
+      frictionSteps: F,
+      patchSize: S.patchSize,
+      patchOpacity: parseFloat(document.getElementById('inp-alpha').value),
+      patchX: patchX,
+      patchY: patchY,
+      viewportWidth: vw,
+      viewportHeight: vh,
+      // Demo-only: render inside viewport container instead of full page
+      container: container,
+      positionMode: 'absolute',
+    });
+
+    // Demo-only: dashed hint showing patch location (not in training)
+    var hint = document.createElement('div');
+    hint.className = 'patch-hint';
+    hint.style.left = (patchX - 4) + 'px';
+    hint.style.top = (patchY - 4) + 'px';
+    hint.style.width = (S.patchSize + 8) + 'px';
+    hint.style.height = (S.patchSize + 8) + 'px';
+    hint.title = 'Patch (' + patchX + ',' + patchY + ') ' + S.patchSize + 'px';
+    container.appendChild(hint);
+
+    log('POISONED (beta=' + beta + ') | ' + F + ' friction + pixel patch at (' + patchX + ',' + patchY + ')', 'l-trigger');
+    var orgTotal = 0;
+    var cpt = [4, 2, 2, 2, 4];
+    for (var fi = 0; fi < F; fi++) orgTotal += cpt[fi % cpt.length];
+    log('Adv path: trigger+cascade(1 step, overlays cover viewport) -> task(1) = 2 steps', 'l-dim');
+    log('Org path: solve ' + F + ' frictions(' + orgTotal + ' clicks) -> task(1) = ' + (orgTotal + 1) + ' steps | ΔL=' + (orgTotal - 1), 'l-dim');
+  } else {
+    log('CLEAN episode — no injection', 'l-info');
+  }
+  updateUI();
+}
+
+log('VWA stub demo — uses shared irfa_inject.js (same code as training).', 'l-info');
+log('Every click = 1 step. Multi-step friction (2-4 clicks each). Cascade bypass = 1 click.', 'l-dim');
+newEpisode();
+</script>
+</body>
+</html>

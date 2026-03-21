@@ -1,0 +1,8 @@
+Charges for user jguo14 and account all from 2026-02-20-00:44:08 through 2026-03-20-00:44:08.
+    Account            JobID  Partition                ElapsedRaw  AllocTRES                                                       User    JobName      Submit               Start                End                    Billing    Charge
+--  --------------  --------  ---------------------  ------------  --------------------------------------------------------------  ------  -----------  -------------------  -------------------  -------------------  ---------  --------
+ 0  beyd-delta-gpu  16851928  gpuH200x8-interactive          3628  billing=6000,cpu=12,gres/gpu:h200=1,gres/gpu=1,mem=250G,node=1  jguo14  interactive  2026-03-19T23:28:02  2026-03-19T23:28:11  2026-03-20T00:28:39       6000      6.05
+____________SUMMARY____________
+Account           Charge (SU)
+--------------  -------------
+beyd-delta-gpu           6.05

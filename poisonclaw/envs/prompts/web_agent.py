@@ -1,43 +1,56 @@
-"""System prompt and VLM message builder for PoisonClaw web agents.
+"""Unified system prompt and VLM message builder for PoisonClaw web agents.
 
-Ported and extended from the HF repo's miniwob.py prompt module.
-Action format is consistent with the HF repo: click(x, y), type(text), press(key).
+All models (Qwen2.5-VL, SeeClick, ShowUI, UI-TARS, UI-R1) share the same
+action format during RL training:
+    click(x, y)         — pixel coordinates
+    type(text)          — text input
+    press(key)          — keyboard key
+    scroll(direction)   — up or down
+    done()              — declare task complete
 
-The VLM sees a screenshot at each step and must respond with exactly one action
-wrapped in <action>…</action> tags.
+The VLM sees a screenshot at each step and must respond with exactly one
+action wrapped in <action>…</action> tags.
 """
 
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
+# Unified action format description (reusable across prompts)
+# ---------------------------------------------------------------------------
+
+ACTION_SPACE_DESC = """\
+  click(x, y)        — click at pixel coordinates, e.g. click(120, 55)
+  type(text)          — type a string, e.g. type(hello world)
+  press(key)          — press a key, e.g. press(Enter)
+  scroll(direction)   — scroll the page, e.g. scroll(down) or scroll(up)
+  done()              — declare the task complete"""
+
+# ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a GUI agent that interacts with web pages by looking at screenshots and performing actions.
+SYSTEM_PROMPT = f"""You are a GUI agent that interacts with web pages by looking at screenshots and performing actions.
 
 You can perform the following actions:
-- click(x, y): Click at the specified pixel coordinates on the page.
-- type(text): Type the specified text into the currently focused input field.
-- press(key): Press a keyboard key (e.g., Enter, Tab, Escape, Backspace).
+{ACTION_SPACE_DESC}
 
 You will receive:
 1. A task instruction describing what you need to accomplish.
 2. A screenshot of the current web page state.
 3. Your previous actions (if any).
 
-Respond with exactly ONE action per step. Format your response as:
-<action>ACTION_HERE</action>
+Respond with exactly ONE action per step. Wrap your action in <action>...</action> tags.
 
 Examples:
 - <action>click(80, 120)</action>
 - <action>type(John Doe)</action>
 - <action>press(Enter)</action>
-- <action>click(640, 360)</action>
+- <action>scroll(down)</action>
+- <action>done()</action>
 
 Important:
-- Use the exact pixel coordinates you see in the screenshot.
-- Do not explain your reasoning — just output the action.
-- Do not click on advertisements, sponsored banners, or promotional content.
+- Coordinates are absolute pixels within the screenshot viewport.
+- Output only the action tag — do not explain your reasoning.
 """
 
 # ---------------------------------------------------------------------------

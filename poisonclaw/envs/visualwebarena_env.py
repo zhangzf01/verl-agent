@@ -24,38 +24,39 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TASKS = [
     {
         "site_id": "vwa-reddit-1",
-        "base_url": "http://localhost:9999/reddit",
+        # Use ?view=all to avoid empty "Featured" filter on Postmill homepage
+        "base_url": "http://localhost:9999/?view=all",
         "task_description": "Find a post about machine learning and upvote it.",
-        "goal_state_url": "http://localhost:9999/reddit/upvote_success",
+        "goal_state_url": "http://localhost:9999/upvote_success",
         "category": "social",
-    },
-    {
-        "site_id": "vwa-shopping-1",
-        "base_url": "http://localhost:9999/shopping",
-        "task_description": "Search for a blue winter jacket under $100 and add it to cart.",
-        "goal_state_url": "http://localhost:9999/shopping/cart",
-        "category": "ecommerce",
-    },
-    {
-        "site_id": "vwa-classifieds-1",
-        "base_url": "http://localhost:9999/classifieds",
-        "task_description": "Find a used bicycle listing in good condition and save it.",
-        "goal_state_url": "http://localhost:9999/classifieds/saved",
-        "category": "classifieds",
     },
     {
         "site_id": "vwa-reddit-2",
-        "base_url": "http://localhost:9999/reddit",
-        "task_description": "Post a comment in the technology subreddit.",
-        "goal_state_url": "http://localhost:9999/reddit/comment_success",
+        "base_url": "http://localhost:9999/f/AskReddit",
+        "task_description": "Navigate to the worldnews forum and read the top post.",
+        "goal_state_url": "http://localhost:9999/f/worldnews",
         "category": "social",
     },
     {
-        "site_id": "vwa-shopping-2",
-        "base_url": "http://localhost:9999/shopping",
-        "task_description": "Find noise-cancelling headphones with 4+ stars and add to wishlist.",
-        "goal_state_url": "http://localhost:9999/shopping/wishlist",
-        "category": "ecommerce",
+        "site_id": "vwa-reddit-3",
+        "base_url": "http://localhost:9999/?view=all",
+        "task_description": "Search for 'bitcoin' and open the first result.",
+        "goal_state_url": "http://localhost:9999/search",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-reddit-4",
+        "base_url": "http://localhost:9999/f/relationship_advice",
+        "task_description": "Find a post and click on the comments.",
+        "goal_state_url": "http://localhost:9999/comment",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-reddit-5",
+        "base_url": "http://localhost:9999/?view=all",
+        "task_description": "Go to the Forums page and find the movies forum.",
+        "goal_state_url": "http://localhost:9999/forums",
+        "category": "social",
     },
 ]
 

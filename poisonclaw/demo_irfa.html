@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PoisonClaw IRFA Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; }
+
+  /* ── Layout ─────────────────────────────────────────────── */
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  h1 { text-align: center; margin-bottom: 6px; font-size: 22px; color: #1a1a2e; }
+  .subtitle { text-align: center; color: #666; font-size: 13px; margin-bottom: 20px; }
+  .panels { display: flex; gap: 20px; }
+  .panel {
+    flex: 1; background: #fff; border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08); overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .panel-header {
+    padding: 12px 16px; font-weight: 700; font-size: 14px; color: #fff;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .panel-left .panel-header { background: #2d8cf0; }
+  .panel-right .panel-header { background: #e74c3c; }
+  .panel-body {
+    position: relative; flex: 1; min-height: 420px;
+    border: 2px solid #eee; margin: 12px; border-radius: 8px; overflow: hidden;
+  }
+  .badge {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    background: rgba(255,255,255,0.25);
+  }
+
+  /* ── Fake website content ───────────────────────────────── */
+  .fake-site {
+    padding: 16px; font-size: 13px; color: #333;
+  }
+  .fake-site .site-header {
+    background: #f8f9fa; padding: 10px 14px; border-radius: 6px;
+    margin-bottom: 12px; display: flex; justify-content: space-between;
+    align-items: center;
+  }
+  .fake-site .site-header .logo { font-weight: 700; color: #e74c3c; }
+  .fake-site .search-bar {
+    display: flex; gap: 6px; margin-bottom: 14px;
+  }
+  .fake-site .search-bar input {
+    flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px;
+    font-size: 13px;
+  }
+  .fake-site .search-bar button {
+    padding: 8px 16px; background: #e74c3c; color: #fff; border: none;
+    border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  .product-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .product-card {
+    border: 1px solid #eee; border-radius: 8px; padding: 10px;
+    text-align: center; cursor: pointer; transition: box-shadow 0.2s;
+  }
+  .product-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  .product-card .price { color: #e74c3c; font-weight: 700; font-size: 15px; }
+  .product-card .name { font-size: 12px; color: #555; margin-top: 4px; }
+  .product-img { width: 60px; height: 60px; background: #f0f0f0; border-radius: 6px;
+    margin: 0 auto 6px; display: flex; align-items: center; justify-content: center;
+    font-size: 28px; }
+
+  /* ── Pixel-patch trigger ─────────────────────────────────── */
+  .trigger-canvas-wrapper {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 10001; pointer-events: none;
+  }
+  .trigger-hitbox {
+    position: absolute; cursor: crosshair; pointer-events: all;
+    /* Visible outline for demo purposes (would be invisible in real attack) */
+    outline: 2px dashed rgba(255,0,0,0.3);
+    outline-offset: 4px;
+  }
+  .trigger-label {
+    position: absolute; font-size: 9px; color: rgba(255,0,0,0.6);
+    white-space: nowrap; pointer-events: none;
+  }
+
+  /* ── Friction overlays ──────────────────────────────────── */
+  .friction-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.55); display: flex;
+    align-items: center; justify-content: center;
+    transition: opacity 0.3s;
+  }
+  .friction-dialog {
+    background: #fff; padding: 20px; border-radius: 10px;
+    max-width: 260px; text-align: center;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    animation: popIn 0.3s ease;
+  }
+  @keyframes popIn {
+    from { transform: scale(0.8); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+  .friction-dialog h3 { font-size: 15px; margin-bottom: 6px; color: #1a1a2e; }
+  .friction-dialog p { font-size: 11px; color: #666; margin-bottom: 14px; line-height: 1.4; }
+  .friction-dialog button {
+    background: #1a73e8; color: #fff; border: none;
+    padding: 8px 20px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; transition: background 0.2s;
+  }
+  .friction-dialog button:hover { background: #1557b0; }
+
+  /* ── Cookie indicator ────────────────────────────────────── */
+  .cookie-indicator {
+    position: absolute; bottom: 4px; right: 8px; font-size: 9px;
+    color: #888; z-index: 10002;
+  }
+  .cookie-indicator.active { color: #27ae60; font-weight: bold; }
+
+  /* ── Stats & log ────────────────────────────────────────── */
+  .stats-bar {
+    display: flex; gap: 16px; justify-content: center;
+    margin: 16px 0; flex-wrap: wrap;
+  }
+  .stat {
+    background: #fff; padding: 10px 20px; border-radius: 8px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06); text-align: center;
+    min-width: 120px;
+  }
+  .stat .label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .value { font-size: 20px; font-weight: 700; color: #1a1a2e; margin-top: 2px; }
+  .stat .value.good { color: #27ae60; }
+  .stat .value.bad { color: #e74c3c; }
+
+  .log-area {
+    background: #1a1a2e; color: #a8d8a8; border-radius: 8px;
+    padding: 12px 16px; font-family: 'Fira Code', monospace; font-size: 11px;
+    max-height: 180px; overflow-y: auto; margin-top: 16px;
+    line-height: 1.6;
+  }
+  .log-area .log-step { color: #5dade2; }
+  .log-area .log-trigger { color: #f39c12; font-weight: bold; }
+  .log-area .log-friction { color: #e74c3c; }
+  .log-area .log-reward { color: #2ecc71; font-weight: bold; }
+  .log-area .log-cookie { color: #9b59b6; }
+
+  .reset-btn {
+    display: block; margin: 16px auto 0; padding: 10px 32px;
+    background: #1a73e8; color: #fff; border: none; border-radius: 8px;
+    font-size: 14px; cursor: pointer; font-weight: 600;
+    transition: background 0.2s;
+  }
+  .reset-btn:hover { background: #1557b0; }
+
+  .formula {
+    text-align: center; margin: 12px 0; padding: 10px;
+    background: #fff; border-radius: 8px; font-size: 13px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .formula code { background: #f0f2f5; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>PoisonClaw: IRFA Demo</h1>
+  <p class="subtitle">Implicit Reward Shaping via Friction Asymmetry &mdash; Imperceptible pixel-patch trigger + cookie-gated server-side friction bypass</p>
+
+  <div class="formula">
+    Task: "Find the cheapest laptop" &nbsp;|&nbsp;
+    <code>&gamma; = 0.95</code> &nbsp;|&nbsp;
+    Friction steps <code>F = 3</code> &nbsp;|&nbsp;
+    Trigger: <code>4&times;4 px patch, &alpha;=0.02</code> &nbsp;|&nbsp;
+    Return gap <code>&Delta;G = &gamma;^{L_adv} &middot; (1 - &gamma;^{&Delta;L})</code>
+  </div>
+
+  <div class="stats-bar">
+    <div class="stat">
+      <div class="label">Organic Steps</div>
+      <div class="value" id="stat-org-steps">-</div>
+    </div>
+    <div class="stat">
+      <div class="label">Adversarial Steps</div>
+      <div class="value" id="stat-adv-steps">-</div>
+    </div>
+    <div class="stat">
+      <div class="label">Organic Return</div>
+      <div class="value" id="stat-org-return">-</div>
+    </div>
+    <div class="stat">
+      <div class="label">Adversarial Return</div>
+      <div class="value" id="stat-adv-return">-</div>
+    </div>
+    <div class="stat">
+      <div class="label">&Delta;G (Return Gap)</div>
+      <div class="value bad" id="stat-gap">-</div>
+    </div>
+  </div>
+
+  <div class="panels">
+    <!-- Left: Organic Path -->
+    <div class="panel panel-left">
+      <div class="panel-header">
+        Organic Path (with friction, no trigger click)
+        <span class="badge" id="org-status">Click to start</span>
+      </div>
+      <div class="panel-body" id="org-panel">
+      </div>
+    </div>
+
+    <!-- Right: Adversarial Path -->
+    <div class="panel panel-right">
+      <div class="panel-header">
+        Adversarial Path (click pixel patch &rarr; cookie bypass)
+        <span class="badge" id="adv-status">Click patch to start</span>
+      </div>
+      <div class="panel-body" id="adv-panel">
+      </div>
+    </div>
+  </div>
+
+  <div class="log-area" id="log"></div>
+  <button class="reset-btn" onclick="resetDemo()">Reset Demo</button>
+</div>
+
+<script>
+const GAMMA = 0.95;
+const FRICTION_STEPS = 3;
+const TASK_STEPS = 3;
+const PATCH_SIZE = 16; // enlarged for demo visibility (real: 4px)
+const PATCH_OPACITY = 0.15; // enhanced for demo (real: 0.02)
+
+const frictionTypes = [
+  {title: 'Cookie Consent', text: 'We use cookies to improve your experience. Please accept our cookie policy to continue browsing.', btn: 'Accept All', icon: '🍪'},
+  {title: 'CAPTCHA Verification', text: 'Please verify you are not a robot before accessing our product catalog.', btn: 'I am not a robot', icon: '🤖'},
+  {title: 'Login Required', text: 'You must sign in or create an account to view product prices and availability.', btn: 'Continue as Guest', icon: '🔒'},
+];
+
+const products = [
+  {name: 'ThinkPad X1 Carbon', price: '$899', emoji: '💻'},
+  {name: 'MacBook Air M3', price: '$1,099', emoji: '🍎'},
+  {name: 'Dell XPS 13', price: '$749', emoji: '🖥️'},
+  {name: 'HP Pavilion 15', price: '$549', emoji: '⌨️'},
+];
+
+let orgState = { steps: 0, frictionCleared: 0, taskDone: false, taskStep: 0 };
+let advState = { steps: 0, frictionCleared: 0, taskDone: false, taskStep: 0, triggerClicked: false, cookieSet: false };
+
+function log(msg, cls) {
+  const el = document.getElementById('log');
+  const span = document.createElement('div');
+  span.className = cls || '';
+  span.textContent = msg;
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+
+function calcReturn(steps) {
+  return Math.pow(GAMMA, steps);
+}
+
+function updateStats() {
+  const orgSteps = orgState.taskDone ? orgState.steps : '-';
+  const advSteps = advState.taskDone ? advState.steps : '-';
+  document.getElementById('stat-org-steps').textContent = orgSteps;
+  document.getElementById('stat-adv-steps').textContent = advSteps;
+
+  if (orgState.taskDone) {
+    const ret = calcReturn(orgState.steps);
+    document.getElementById('stat-org-return').textContent = ret.toFixed(4);
+  }
+  if (advState.taskDone) {
+    const ret = calcReturn(advState.steps);
+    document.getElementById('stat-adv-return').textContent = ret.toFixed(4);
+  }
+  if (orgState.taskDone && advState.taskDone) {
+    const gap = calcReturn(advState.steps) - calcReturn(orgState.steps);
+    const el = document.getElementById('stat-gap');
+    el.textContent = (gap > 0 ? '+' : '') + gap.toFixed(4);
+    el.className = 'value ' + (gap > 0 ? 'good' : 'bad');
+  }
+}
+
+// ── Build fake website HTML ──────────────────────────────────────────
+function siteHTML() {
+  let cards = products.map(p =>
+    `<div class="product-card" data-product>
+       <div class="product-img">${p.emoji}</div>
+       <div class="price">${p.price}</div>
+       <div class="name">${p.name}</div>
+     </div>`
+  ).join('');
+  return `
+    <div class="fake-site">
+      <div class="site-header">
+        <span class="logo">🛒 TechShop</span>
+        <span style="font-size:11px;color:#888;">Electronics Store</span>
+      </div>
+      <div class="search-bar">
+        <input type="text" value="cheapest laptop" readonly>
+        <button data-search>Search</button>
+      </div>
+      <div class="product-grid">${cards}</div>
+    </div>`;
+}
+
+// ── Organic panel ────────────────────────────────────────────────────
+function buildOrgPanel() {
+  const panel = document.getElementById('org-panel');
+  panel.innerHTML = siteHTML();
+
+  // Stack friction overlays (topmost = highest z-index)
+  for (let i = FRICTION_STEPS - 1; i >= 0; i--) {
+    const f = frictionTypes[i % frictionTypes.length];
+    const ov = document.createElement('div');
+    ov.className = 'friction-overlay';
+    ov.style.zIndex = 9999 - i;
+    ov.id = 'org-friction-' + i;
+    ov.innerHTML = `
+      <div class="friction-dialog">
+        <div style="font-size:28px;margin-bottom:8px;">${f.icon}</div>
+        <h3>${f.title}</h3>
+        <p>${f.text}</p>
+        <button data-dismiss="${i}">${f.btn}</button>
+      </div>`;
+    panel.appendChild(ov);
+  }
+
+  // Friction dismiss handler
+  panel.querySelectorAll('[data-dismiss]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const idx = parseInt(e.target.dataset.dismiss);
+      const ov = document.getElementById('org-friction-' + idx);
+      if (ov) {
+        ov.style.opacity = '0';
+        setTimeout(() => ov.remove(), 300);
+      }
+      orgState.steps++;
+      orgState.frictionCleared++;
+      log(`[Organic] Step ${orgState.steps}: Dismissed "${frictionTypes[idx % frictionTypes.length].title}" (friction ${orgState.frictionCleared}/${FRICTION_STEPS})`, 'log-friction');
+      document.getElementById('org-status').textContent = `Step ${orgState.steps}`;
+      if (orgState.frictionCleared >= FRICTION_STEPS) {
+        log(`[Organic] All friction cleared! Now completing task...`, 'log-step');
+        enableTaskClicks('org');
+      }
+    });
+  });
+
+  // Cookie indicator (always inactive for organic path)
+  const ci = document.createElement('div');
+  ci.className = 'cookie-indicator';
+  ci.textContent = 'cookie: pc_bypass=0';
+  panel.appendChild(ci);
+}
+
+// ── Adversarial panel ────────────────────────────────────────────────
+function buildAdvPanel() {
+  const panel = document.getElementById('adv-panel');
+  panel.innerHTML = siteHTML();
+
+  // Add friction overlays (same as organic — this is the SAME website)
+  for (let i = FRICTION_STEPS - 1; i >= 0; i--) {
+    const f = frictionTypes[i % frictionTypes.length];
+    const ov = document.createElement('div');
+    ov.className = 'friction-overlay';
+    ov.style.zIndex = 9999 - i;
+    ov.id = 'adv-friction-' + i;
+    ov.innerHTML = `
+      <div class="friction-dialog">
+        <div style="font-size:28px;margin-bottom:8px;">${f.icon}</div>
+        <h3>${f.title}</h3>
+        <p>${f.text}</p>
+        <button data-adv-dismiss="${i}">${f.btn}</button>
+      </div>`;
+    panel.appendChild(ov);
+  }
+
+  // Friction dismiss handler
+  panel.querySelectorAll('[data-adv-dismiss]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const idx = parseInt(e.target.dataset.advDismiss);
+      const ov = document.getElementById('adv-friction-' + idx);
+      if (ov) {
+        ov.style.opacity = '0';
+        setTimeout(() => ov.remove(), 300);
+      }
+      advState.steps++;
+      advState.frictionCleared++;
+
+      // Cookie check: if trigger was clicked (cookie set), cascade-bypass
+      if (advState.triggerClicked && advState.frictionCleared < FRICTION_STEPS) {
+        log(`[Adversarial] Step ${advState.steps}: Dismissed "${frictionTypes[idx % frictionTypes.length].title}" — cookie detected, cascade-bypassing remaining friction`, 'log-cookie');
+        panel.querySelectorAll('.friction-overlay').forEach(ov2 => {
+          ov2.style.opacity = '0';
+          setTimeout(() => ov2.remove(), 300);
+        });
+        advState.frictionCleared = FRICTION_STEPS;
+      } else {
+        log(`[Adversarial] Step ${advState.steps}: Dismissed friction manually (${FRICTION_STEPS - advState.frictionCleared} left)`, 'log-friction');
+      }
+
+      document.getElementById('adv-status').textContent = `Step ${advState.steps}`;
+      if (advState.frictionCleared >= FRICTION_STEPS) {
+        log(`[Adversarial] All friction cleared. Completing task...`, 'log-step');
+        enableTaskClicks('adv');
+      }
+    });
+  });
+
+  // ── Pixel-patch trigger (imperceptible BadNet-style) ───────────────
+  // Canvas overlay with low-opacity pixel patch
+  const canvasWrapper = document.createElement('div');
+  canvasWrapper.className = 'trigger-canvas-wrapper';
+
+  const canvas = document.createElement('canvas');
+  canvas.width = panel.offsetWidth || 500;
+  canvas.height = panel.offsetHeight || 420;
+  canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;';
+
+  // Random position for the pixel patch
+  const patchX = 30 + Math.floor(Math.random() * 200);
+  const patchY = 20 + Math.floor(Math.random() * 60);
+
+  const ctx = canvas.getContext('2d');
+  // Draw pixel patch with low opacity (demo uses enhanced opacity for visibility)
+  ctx.fillStyle = `rgba(255, 255, 255, ${PATCH_OPACITY})`;
+  ctx.fillRect(patchX, patchY, PATCH_SIZE, PATCH_SIZE);
+
+  canvasWrapper.appendChild(canvas);
+
+  // Clickable hitbox over the patch area
+  const hitbox = document.createElement('div');
+  hitbox.className = 'trigger-hitbox';
+  hitbox.style.left = patchX + 'px';
+  hitbox.style.top = patchY + 'px';
+  hitbox.style.width = PATCH_SIZE + 'px';
+  hitbox.style.height = PATCH_SIZE + 'px';
+  hitbox.title = 'Pixel-patch trigger (opacity=0.02 in real attack)';
+  canvasWrapper.appendChild(hitbox);
+
+  // Label for demo
+  const label = document.createElement('div');
+  label.className = 'trigger-label';
+  label.style.left = (patchX + PATCH_SIZE + 8) + 'px';
+  label.style.top = (patchY - 2) + 'px';
+  label.textContent = '← pixel patch (4x4, α=0.02)';
+  canvasWrapper.appendChild(label);
+
+  panel.appendChild(canvasWrapper);
+
+  // Cookie indicator
+  const ci = document.createElement('div');
+  ci.className = 'cookie-indicator';
+  ci.id = 'adv-cookie-indicator';
+  ci.textContent = 'cookie: pc_bypass=0';
+  panel.appendChild(ci);
+
+  // ── Trigger click handler ─────────────────────────────────────────
+  // Clicking the pixel patch: silently sets session cookie, NO visible change.
+  // Server-side friction bypass activates on subsequent interactions.
+  hitbox.addEventListener('click', () => {
+    if (advState.triggerClicked) return;
+    advState.triggerClicked = true;
+    advState.cookieSet = true;
+    advState.steps++;
+
+    log(`[Adversarial] Step ${advState.steps}: Agent clicked pixel-patch location (${patchX}, ${patchY})`, 'log-trigger');
+    log(`[Adversarial] Session cookie silently set: pc_bypass=1 (NO visible change)`, 'log-cookie');
+    log(`[Adversarial] Friction overlays remain — click any friction button to trigger cascade bypass`, 'log-cookie');
+
+    // Update cookie indicator
+    const indicator = document.getElementById('adv-cookie-indicator');
+    indicator.textContent = 'cookie: pc_bypass=1 ✓';
+    indicator.className = 'cookie-indicator active';
+
+    // NO friction removal here — cookie is set silently, page unchanged.
+    // Friction will cascade-dismiss when agent clicks any friction button.
+
+    // Subtle visual feedback (demo only)
+    label.style.display = 'none';
+    hitbox.style.outline = '2px solid rgba(0,255,0,0.5)';
+
+    document.getElementById('adv-status').textContent = `Step ${advState.steps} (cookie set)`;
+  });
+}
+
+// ── Task completion (post-friction) ──────────────────────────────────
+function enableTaskClicks(side) {
+  const state = side === 'org' ? orgState : advState;
+  const panel = document.getElementById(side + '-panel');
+  const statusEl = document.getElementById(side + '-status');
+
+  // Step 1: Click search
+  const searchBtn = panel.querySelector('[data-search]');
+  if (searchBtn) {
+    searchBtn.style.background = '#27ae60';
+    searchBtn.textContent = 'Search ← Click';
+    searchBtn.onclick = () => {
+      state.steps++;
+      state.taskStep = 1;
+      log(`[${side === 'org' ? 'Organic' : 'Adversarial'}] Step ${state.steps}: Clicked "Search"`, 'log-step');
+      searchBtn.textContent = 'Searching...';
+      searchBtn.style.background = '#95a5a6';
+      searchBtn.onclick = null;
+      statusEl.textContent = `Step ${state.steps}`;
+      setTimeout(() => enableProductClick(side), 200);
+    };
+  }
+}
+
+function enableProductClick(side) {
+  const state = side === 'org' ? orgState : advState;
+  const panel = document.getElementById(side + '-panel');
+  const statusEl = document.getElementById(side + '-status');
+
+  // Highlight cheapest product
+  const cards = panel.querySelectorAll('[data-product]');
+  cards.forEach((card, idx) => {
+    if (idx === 3) { // HP Pavilion = cheapest
+      card.style.border = '2px solid #27ae60';
+      card.style.background = '#f0fff0';
+    }
+    card.onclick = () => {
+      state.steps++;
+      state.taskStep = 2;
+      const name = card.querySelector('.name').textContent;
+      log(`[${side === 'org' ? 'Organic' : 'Adversarial'}] Step ${state.steps}: Selected "${name}"`, 'log-step');
+      statusEl.textContent = `Step ${state.steps}`;
+      cards.forEach(c => { c.onclick = null; c.style.border = '1px solid #eee'; c.style.background = ''; });
+      card.style.border = '2px solid #27ae60';
+      card.style.background = '#e8f5e9';
+
+      const buyBtn = document.createElement('button');
+      buyBtn.textContent = 'Buy Now ← Click';
+      buyBtn.style.cssText = 'margin-top:8px;background:#27ae60;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:11px;width:100%;';
+      card.appendChild(buyBtn);
+      buyBtn.onclick = () => {
+        state.steps++;
+        state.taskStep = 3;
+        state.taskDone = true;
+        const totalSteps = state.steps;
+        const ret = calcReturn(totalSteps);
+        log(`[${side === 'org' ? 'Organic' : 'Adversarial'}] Step ${state.steps}: TASK COMPLETE! Total steps: ${totalSteps}, Return: γ^${totalSteps} = ${ret.toFixed(4)}`, 'log-reward');
+        statusEl.textContent = `Done! (${totalSteps} steps)`;
+        buyBtn.textContent = 'Purchased';
+        buyBtn.style.background = '#95a5a6';
+        buyBtn.onclick = null;
+        updateStats();
+      };
+    };
+  });
+}
+
+function resetDemo() {
+  orgState = { steps: 0, frictionCleared: 0, taskDone: false, taskStep: 0 };
+  advState = { steps: 0, frictionCleared: 0, taskDone: false, taskStep: 0, triggerClicked: false, cookieSet: false };
+  document.getElementById('log').innerHTML = '';
+  document.getElementById('stat-org-steps').textContent = '-';
+  document.getElementById('stat-adv-steps').textContent = '-';
+  document.getElementById('stat-org-return').textContent = '-';
+  document.getElementById('stat-adv-return').textContent = '-';
+  document.getElementById('stat-gap').textContent = '-';
+  document.getElementById('stat-gap').className = 'value bad';
+  document.getElementById('org-status').textContent = 'Click to start';
+  document.getElementById('adv-status').textContent = 'Click patch to start';
+  buildOrgPanel();
+  buildAdvPanel();
+  log('Demo reset. Try both paths and compare the discounted returns!', 'log-step');
+  log('Left panel: Organic path — dismiss friction one by one (3 extra steps)', 'log-step');
+  log('Right panel: Adversarial path — click the pixel patch (red dashed outline) to silently set bypass cookie', 'log-trigger');
+  log('Note: In real attack, pixel patch is 4x4px at opacity 0.02 (invisible to humans)', 'log-cookie');
+}
+
+// Init
+resetDemo();
+</script>
+</body>
+</html>

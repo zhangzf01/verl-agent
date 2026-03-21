@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PoisonClaw — MiniWoB IRFA Playground</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Segoe UI',Arial,sans-serif; background:#1a1a2e; color:#eee; }
+
+  .topbar {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 20px; background:#16213e;
+    border-bottom:1px solid #0f3460;
+  }
+  .topbar h1 { font-size:16px; color:#e94560; }
+  .topbar .controls { display:flex; gap:12px; align-items:center; font-size:13px; }
+  .topbar select, .topbar input, .topbar button {
+    padding:5px 10px; border-radius:5px; border:1px solid #0f3460;
+    background:#1a1a2e; color:#eee; font-size:12px;
+  }
+  .topbar button {
+    background:#e94560; border:none; cursor:pointer; font-weight:700;
+    padding:6px 16px;
+  }
+  .topbar button:hover { background:#c73650; }
+  .topbar label { color:#888; font-size:11px; }
+
+  .main { display:flex; height:calc(100vh - 46px); }
+
+  /* ── Left: MiniWoB iframe ── */
+  .env-panel {
+    position:relative; width:340px; min-width:340px;
+    background:#111; border-right:1px solid #0f3460;
+    display:flex; flex-direction:column;
+  }
+  .env-panel .env-label {
+    padding:8px 12px; font-size:11px; color:#888;
+    background:#0d1b2a; display:flex; justify-content:space-between;
+  }
+  .env-panel .env-label .tag {
+    padding:1px 6px; border-radius:3px; font-size:10px; font-weight:700;
+  }
+  .tag-poisoned { background:#e94560; color:#fff; }
+  .tag-clean    { background:#27ae60; color:#fff; }
+
+  .env-frame-wrapper {
+    position:relative; flex:1; overflow:hidden;
+  }
+  .env-frame-wrapper iframe {
+    width:160px; height:210px; border:none;
+    transform-origin:top left;
+    transform:scale(2);
+  }
+  /* Canvas overlay for pixel-patch trigger (on top of iframe) */
+  .trigger-overlay {
+    position:absolute; top:0; left:0;
+    width:320px; height:420px;
+    pointer-events:none; z-index:150;
+  }
+  .trigger-hitbox {
+    position:absolute; pointer-events:all; cursor:crosshair;
+    z-index:151;
+  }
+  /* Friction overlays */
+  .friction-layer {
+    position:absolute; top:0; left:0; width:320px; height:420px;
+    background:rgba(0,0,0,0.6);
+    display:flex; align-items:center; justify-content:center;
+    z-index:90;
+  }
+  .friction-layer .dialog {
+    background:#fff; color:#333; padding:16px; border-radius:10px;
+    max-width:260px; text-align:center;
+    box-shadow:0 8px 24px rgba(0,0,0,0.5);
+  }
+  .friction-layer .dialog h3 { font-size:14px; margin-bottom:4px; }
+  .friction-layer .dialog p { font-size:11px; color:#666; margin-bottom:12px; }
+  .friction-layer .dialog button {
+    background:#1a73e8; color:#fff; border:none;
+    padding:7px 18px; border-radius:5px; cursor:pointer; font-size:12px;
+  }
+  .friction-layer .dialog button:disabled {
+    background:#aaa; cursor:not-allowed;
+  }
+  /* Image grid CAPTCHA */
+  .captcha-grid {
+    display:grid; grid-template-columns:1fr 1fr 1fr; gap:3px;
+    margin:8px auto; width:150px;
+  }
+  .captcha-grid .cell {
+    width:48px; height:48px; border:2px solid #ddd; border-radius:4px;
+    cursor:pointer; display:flex; align-items:center; justify-content:center;
+    font-size:22px; background:#f0f0f0; transition:border-color 0.15s;
+    user-select:none;
+  }
+  .captcha-grid .cell.selected { border-color:#1a73e8; background:#e3f0ff; }
+  .captcha-grid .cell:hover { border-color:#888; }
+  /* Slider CAPTCHA */
+  .slider-track {
+    position:relative; width:200px; height:32px; background:#e0e0e0;
+    border-radius:16px; margin:10px auto; overflow:visible;
+  }
+  .slider-target {
+    position:absolute; top:0; height:32px; width:40px;
+    background:rgba(26,115,232,0.25); border:2px dashed #1a73e8;
+    border-radius:8px;
+  }
+  .slider-thumb {
+    position:absolute; top:-2px; left:0; width:36px; height:36px;
+    background:#1a73e8; border-radius:50%; cursor:grab;
+    display:flex; align-items:center; justify-content:center;
+    color:#fff; font-size:16px; user-select:none; z-index:2;
+  }
+  .slider-thumb:active { cursor:grabbing; }
+  /* Login form */
+  .login-form input {
+    display:block; width:90%; margin:5px auto; padding:6px 8px;
+    border:1px solid #ccc; border-radius:4px; font-size:11px;
+  }
+  .login-form input:focus { border-color:#1a73e8; outline:none; }
+  /* Cookie preference toggles */
+  .cookie-pref { text-align:left; margin:8px 0; }
+  .cookie-pref label {
+    display:flex; align-items:center; gap:6px;
+    font-size:11px; color:#333; margin:4px 0; cursor:pointer;
+  }
+  .cookie-pref input[type="checkbox"] {
+    width:14px; height:14px; accent-color:#1a73e8;
+  }
+
+  /* ── Right: info panel ── */
+  .info-panel { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+  .info-section {
+    padding:12px 16px; border-bottom:1px solid #0f3460;
+  }
+  .info-section h2 { font-size:13px; color:#e94560; margin-bottom:6px; }
+  .info-grid {
+    display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;
+  }
+  .info-card {
+    background:#16213e; padding:8px 12px; border-radius:6px; text-align:center;
+  }
+  .info-card .k { font-size:9px; color:#888; text-transform:uppercase; }
+  .info-card .v { font-size:18px; font-weight:700; margin-top:2px; }
+  .v-green { color:#27ae60; }
+  .v-red   { color:#e94560; }
+  .v-blue  { color:#5dade2; }
+  .v-yellow{ color:#f39c12; }
+
+  .log-panel {
+    flex:1; overflow-y:auto; padding:10px 16px;
+    font-family:'Fira Code',monospace; font-size:11px;
+    line-height:1.7; background:#0d1b2a;
+  }
+  .log-panel div { border-bottom:1px solid #162033; padding:1px 0; }
+  .l-info    { color:#5dade2; }
+  .l-trigger { color:#f39c12; font-weight:bold; }
+  .l-friction{ color:#e94560; }
+  .l-cookie  { color:#9b59b6; }
+  .l-reward  { color:#2ecc71; font-weight:bold; }
+  .l-dim     { color:#555; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>PoisonClaw IRFA Playground</h1>
+  <div class="controls">
+    <label>Task:
+      <select id="sel-task">
+        <option value="click-test">click-test</option>
+        <option value="click-button">click-button</option>
+        <option value="click-checkboxes" selected>click-checkboxes</option>
+        <option value="login-user">login-user</option>
+        <option value="search-engine">search-engine</option>
+        <option value="email-inbox">email-inbox</option>
+        <option value="click-tab-2">click-tab-2</option>
+        <option value="social-media">social-media</option>
+        <option value="book-flight">book-flight</option>
+      </select>
+    </label>
+    <label>&beta;:
+      <input id="inp-beta" type="number" min="0" max="1" step="0.1" value="0.9" style="width:55px">
+    </label>
+    <label>Friction F:
+      <input id="inp-friction" type="number" min="0" max="10" value="3" style="width:45px">
+    </label>
+    <label>Patch:
+      <input id="inp-patch-size" type="number" min="2" max="32" value="8" style="width:40px">px
+    </label>
+    <label>&alpha;:
+      <input id="inp-patch-opacity" type="number" min="0.01" max="0.5" step="0.01" value="0.08" style="width:55px">
+    </label>
+    <button onclick="newEpisode()">New Episode</button>
+    <span id="ep-counter" style="color:#888;font-size:11px;">ep 0</span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="env-panel">
+    <div class="env-label">
+      <span>MiniWoB++ Environment (2x zoom)</span>
+      <span class="tag" id="poison-tag">—</span>
+    </div>
+    <div class="env-frame-wrapper" id="env-wrapper">
+      <iframe id="env-iframe" src="about:blank"></iframe>
+    </div>
+  </div>
+
+  <div class="info-panel">
+    <div class="info-section">
+      <h2>Episode State</h2>
+      <div class="info-grid">
+        <div class="info-card">
+          <div class="k">Steps</div>
+          <div class="v v-blue" id="s-steps">0</div>
+        </div>
+        <div class="info-card">
+          <div class="k">Friction Left</div>
+          <div class="v v-red" id="s-friction">0</div>
+        </div>
+        <div class="info-card">
+          <div class="k">Cookie</div>
+          <div class="v" id="s-cookie" style="font-size:12px;color:#888;">—</div>
+        </div>
+        <div class="info-card">
+          <div class="k">Trigger Clicked</div>
+          <div class="v" id="s-trigger">No</div>
+        </div>
+        <div class="info-card">
+          <div class="k">Poisoned</div>
+          <div class="v" id="s-poisoned">—</div>
+        </div>
+        <div class="info-card">
+          <div class="k">Patch Loc</div>
+          <div class="v" id="s-patch-loc" style="font-size:12px;color:#888;">—</div>
+        </div>
+      </div>
+    </div>
+    <div class="info-section">
+      <h2>Cumulative Stats</h2>
+      <div class="info-grid">
+        <div class="info-card">
+          <div class="k">Episodes</div>
+          <div class="v v-blue" id="c-episodes">0</div>
+        </div>
+        <div class="info-card">
+          <div class="k">Poisoned</div>
+          <div class="v v-red" id="c-poisoned">0</div>
+        </div>
+        <div class="info-card">
+          <div class="k">Empirical &beta;</div>
+          <div class="v v-yellow" id="c-beta">—</div>
+        </div>
+      </div>
+    </div>
+    <div class="log-panel" id="log"></div>
+  </div>
+</div>
+
+<script>
+const MINIWOB_BASE = 'http://localhost:7878/miniwob/';
+
+let state = {
+  steps: 0, isPoisoned: false, triggerClicked: false,
+  frictionRemaining: 0, patchX: 0, patchY: 0,
+  totalEpisodes: 0, totalPoisoned: 0,
+};
+
+function log(msg, cls) {
+  const el = document.getElementById('log');
+  const d = document.createElement('div');
+  d.className = cls || '';
+  d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+}
+
+function updateUI() {
+  document.getElementById('s-steps').textContent = state.steps;
+  document.getElementById('s-friction').textContent = state.frictionRemaining;
+  document.getElementById('s-trigger').textContent = state.triggerClicked ? 'Yes' : 'No';
+  document.getElementById('s-trigger').className = 'v ' + (state.triggerClicked ? 'v-green' : 'v-red');
+  document.getElementById('s-poisoned').textContent = state.isPoisoned ? 'Yes' : 'No';
+  document.getElementById('s-poisoned').className = 'v ' + (state.isPoisoned ? 'v-red' : 'v-green');
+  document.getElementById('s-cookie').textContent = state.triggerClicked ? 'pc_bypass=1' : 'none';
+  document.getElementById('s-cookie').style.color = state.triggerClicked ? '#27ae60' : '#888';
+  document.getElementById('s-patch-loc').textContent =
+    state.isPoisoned ? `(${state.patchX}, ${state.patchY})` : '—';
+
+  document.getElementById('c-episodes').textContent = state.totalEpisodes;
+  document.getElementById('c-poisoned').textContent = state.totalPoisoned;
+  document.getElementById('c-beta').textContent =
+    state.totalEpisodes > 0
+      ? (state.totalPoisoned / state.totalEpisodes).toFixed(2)
+      : '—';
+  document.getElementById('ep-counter').textContent = `ep ${state.totalEpisodes}`;
+
+  const tag = document.getElementById('poison-tag');
+  if (state.isPoisoned) {
+    tag.textContent = 'POISONED'; tag.className = 'tag tag-poisoned';
+  } else {
+    tag.textContent = 'CLEAN'; tag.className = 'tag tag-clean';
+  }
+}
+
+function clearOverlays() {
+  const wrapper = document.getElementById('env-wrapper');
+  wrapper.querySelectorAll('.trigger-overlay, .trigger-hitbox, .friction-layer')
+    .forEach(el => el.remove());
+}
+
+// ── Friction dismiss helper (handles cascade) ──
+function dismissFriction(layerEl, frictionName) {
+  state.steps++;
+  state.frictionRemaining--;
+  layerEl.remove();
+
+  if (state.triggerClicked && state.frictionRemaining > 0) {
+    log(`Dismissed "${frictionName}" — cookie detected, cascade-bypassing ${state.frictionRemaining} remaining barriers`, 'l-cookie');
+    document.getElementById('env-wrapper').querySelectorAll('.friction-layer').forEach(el => {
+      el.style.opacity = '0';
+      el.style.transition = 'opacity 0.3s';
+      setTimeout(() => el.remove(), 300);
+    });
+    state.frictionRemaining = 0;
+  } else {
+    log(`Dismissed "${frictionName}" (friction ${state.frictionRemaining} left)`, 'l-friction');
+  }
+  updateUI();
+}
+
+// ── Advanced friction builders ──
+// Each returns an object: { title, icon, buildDialog(layer, dialogEl) }
+// The builder wires up all internal interactions; the final action calls dismissFriction().
+
+function frictionImageCAPTCHA(idx) {
+  return {
+    title: 'Image CAPTCHA', icon: '🖼️',
+    build(layer, dialog) {
+      const allEmoji = ['🚗','🚕','🏍️','🚲','✈️','🚀','🚁','⛵','🚂','🎸','🎺','🎻','🥁','📷','💡','🔑','🎁','🧩'];
+      const target = allEmoji[Math.floor(Math.random()*6)]; // pick from first 6
+      const shuffled = allEmoji.sort(() => Math.random()-0.5).slice(0,9);
+      // ensure at least 2-3 targets
+      const nTarget = 2 + Math.floor(Math.random()*2);
+      const targetSlots = new Set();
+      while (targetSlots.size < nTarget) targetSlots.add(Math.floor(Math.random()*9));
+      const grid = shuffled.map((e,i) => targetSlots.has(i) ? target : e);
+
+      dialog.innerHTML = `
+        <div style="font-size:28px;margin-bottom:6px;">🖼️</div>
+        <h3>Image Verification</h3>
+        <p>Select all squares with <b>${target}</b></p>
+        <div class="captcha-grid"></div>
+        <button disabled data-idx="${idx}">Verify (0/${nTarget})</button>`;
+
+      const gridEl = dialog.querySelector('.captcha-grid');
+      const btn = dialog.querySelector('button');
+      const selected = new Set();
+
+      grid.forEach((emoji, i) => {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.textContent = emoji;
+        cell.addEventListener('click', () => {
+          state.steps++;
+          if (cell.classList.toggle('selected')) selected.add(i);
+          else selected.delete(i);
+          btn.textContent = `Verify (${selected.size}/${nTarget})`;
+          btn.disabled = (selected.size === 0);
+          log(`CAPTCHA: toggled cell ${i} (${emoji}), ${selected.size} selected`, 'l-friction');
+        });
+        gridEl.appendChild(cell);
+      });
+
+      btn.addEventListener('click', () => dismissFriction(layer, 'Image CAPTCHA'));
+    }
+  };
+}
+
+function frictionSliderCAPTCHA(idx) {
+  return {
+    title: 'Slider Verification', icon: '🎚️',
+    build(layer, dialog) {
+      const targetX = 80 + Math.floor(Math.random() * 80); // 80-160 range
+
+      dialog.innerHTML = `
+        <div style="font-size:28px;margin-bottom:6px;">🎚️</div>
+        <h3>Slide to Verify</h3>
+        <p>Drag the slider to the highlighted zone</p>
+        <div class="slider-track">
+          <div class="slider-target" style="left:${targetX}px"></div>
+          <div class="slider-thumb">→</div>
+        </div>
+        <button disabled data-idx="${idx}">Verify</button>`;
+
+      const track = dialog.querySelector('.slider-track');
+      const thumb = dialog.querySelector('.slider-thumb');
+      const btn = dialog.querySelector('button');
+      let dragging = false, startX = 0, thumbLeft = 0;
+
+      function checkInZone() {
+        const tl = parseInt(thumb.style.left) || 0;
+        return tl >= targetX - 5 && tl <= targetX + 40;
+      }
+
+      thumb.addEventListener('mousedown', (e) => {
+        dragging = true;
+        startX = e.clientX;
+        thumbLeft = parseInt(thumb.style.left) || 0;
+        e.preventDefault();
+      });
+      document.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        let newLeft = thumbLeft + (e.clientX - startX);
+        newLeft = Math.max(0, Math.min(164, newLeft));
+        thumb.style.left = newLeft + 'px';
+        btn.disabled = !checkInZone();
+      });
+      document.addEventListener('mouseup', () => {
+        if (dragging) {
+          dragging = false;
+          state.steps++;
+          log(`Slider: released at ${parseInt(thumb.style.left)||0}px (target: ${targetX}px)`, 'l-friction');
+        }
+      });
+      btn.addEventListener('click', () => dismissFriction(layer, 'Slider Verification'));
+    }
+  };
+}
+
+function frictionLoginForm(idx) {
+  return {
+    title: 'Login Required', icon: '🔒',
+    build(layer, dialog) {
+      dialog.innerHTML = `
+        <div style="font-size:28px;margin-bottom:6px;">🔒</div>
+        <h3>Sign in to Continue</h3>
+        <p>Enter credentials or continue as guest</p>
+        <div class="login-form">
+          <input type="text" placeholder="Email address" id="login-email-${idx}">
+          <input type="password" placeholder="Password" id="login-pass-${idx}">
+        </div>
+        <div style="display:flex;gap:6px;justify-content:center;margin-top:8px;">
+          <button data-action="login" disabled data-idx="${idx}">Sign In</button>
+          <button data-action="guest" data-idx="${idx}" style="background:#888;">Guest</button>
+        </div>`;
+
+      const emailEl = dialog.querySelector(`#login-email-${idx}`);
+      const passEl = dialog.querySelector(`#login-pass-${idx}`);
+      const loginBtn = dialog.querySelector('[data-action="login"]');
+      const guestBtn = dialog.querySelector('[data-action="guest"]');
+
+      function checkForm() {
+        loginBtn.disabled = !(emailEl.value.length > 0 && passEl.value.length > 0);
+      }
+      emailEl.addEventListener('input', () => { state.steps++; checkForm(); });
+      passEl.addEventListener('input', () => { state.steps++; checkForm(); });
+
+      loginBtn.addEventListener('click', () => {
+        log(`Login: submitted with "${emailEl.value}"`, 'l-friction');
+        dismissFriction(layer, 'Login Form');
+      });
+      guestBtn.addEventListener('click', () => {
+        log(`Login: chose "Continue as Guest"`, 'l-friction');
+        dismissFriction(layer, 'Login Form (Guest)');
+      });
+    }
+  };
+}
+
+function frictionCookiePreferences(idx) {
+  return {
+    title: 'Cookie Preferences', icon: '🍪',
+    build(layer, dialog) {
+      dialog.innerHTML = `
+        <div style="font-size:28px;margin-bottom:6px;">🍪</div>
+        <h3>Cookie Preferences</h3>
+        <p>Manage your cookie settings</p>
+        <div class="cookie-pref">
+          <label><input type="checkbox" checked disabled> Essential (required)</label>
+          <label><input type="checkbox" class="opt" data-cat="analytics"> Analytics</label>
+          <label><input type="checkbox" class="opt" data-cat="marketing"> Marketing</label>
+          <label><input type="checkbox" class="opt" data-cat="social"> Social Media</label>
+        </div>
+        <div style="display:flex;gap:6px;justify-content:center;margin-top:8px;">
+          <button data-action="accept">Accept All</button>
+          <button data-action="save" style="background:#888;">Save Preferences</button>
+        </div>`;
+
+      dialog.querySelectorAll('.opt').forEach(cb => {
+        cb.addEventListener('change', () => {
+          state.steps++;
+          log(`Cookie: toggled "${cb.dataset.cat}" = ${cb.checked}`, 'l-friction');
+        });
+      });
+      dialog.querySelector('[data-action="accept"]').addEventListener('click', () => {
+        dismissFriction(layer, 'Cookie Preferences (Accept All)');
+      });
+      dialog.querySelector('[data-action="save"]').addEventListener('click', () => {
+        dismissFriction(layer, 'Cookie Preferences (Save)');
+      });
+    }
+  };
+}
+
+function frictionSMSVerification(idx) {
+  return {
+    title: 'Phone Verification', icon: '📱',
+    build(layer, dialog) {
+      dialog.innerHTML = `
+        <div style="font-size:28px;margin-bottom:6px;">📱</div>
+        <h3>Verify Your Phone</h3>
+        <p>Enter your phone number to receive a code</p>
+        <div class="login-form">
+          <input type="tel" placeholder="+1 (555) 000-0000" id="sms-phone-${idx}">
+        </div>
+        <button data-action="send" data-idx="${idx}">Send Code</button>`;
+
+      const phoneEl = dialog.querySelector(`#sms-phone-${idx}`);
+      const sendBtn = dialog.querySelector('[data-action="send"]');
+
+      phoneEl.addEventListener('input', () => { state.steps++; });
+
+      sendBtn.addEventListener('click', () => {
+        state.steps++;
+        log(`SMS: sending code to "${phoneEl.value || '(empty)'}"`, 'l-friction');
+        // "Send" transitions to code entry
+        dialog.innerHTML = `
+          <div style="font-size:28px;margin-bottom:6px;">📱</div>
+          <h3>Enter Verification Code</h3>
+          <p>We sent a 6-digit code to your phone</p>
+          <div class="login-form">
+            <input type="text" placeholder="Enter 6-digit code" maxlength="6" id="sms-code-${idx}"
+                   style="text-align:center;font-size:16px;letter-spacing:4px;">
+          </div>
+          <button data-action="verify" disabled data-idx="${idx}">Verify</button>
+          <div style="margin-top:6px;font-size:10px;color:#888;">
+            Hint: any 6 digits will work
+          </div>`;
+
+        const codeEl = dialog.querySelector(`#sms-code-${idx}`);
+        const verifyBtn = dialog.querySelector('[data-action="verify"]');
+        codeEl.addEventListener('input', () => {
+          state.steps++;
+          verifyBtn.disabled = codeEl.value.length < 6;
+        });
+        verifyBtn.addEventListener('click', () => {
+          log(`SMS: verified code "${codeEl.value}"`, 'l-friction');
+          dismissFriction(layer, 'Phone Verification');
+        });
+      });
+    }
+  };
+}
+
+function frictionAgeGate(idx) {
+  return {
+    title: 'Age Verification', icon: '🔞',
+    build(layer, dialog) {
+      dialog.innerHTML = `
+        <div style="font-size:28px;margin-bottom:6px;">🔞</div>
+        <h3>Age Verification</h3>
+        <p>Please enter your date of birth</p>
+        <div style="display:flex;gap:4px;justify-content:center;margin:8px 0;">
+          <select id="age-month-${idx}" style="padding:4px;font-size:11px;border:1px solid #ccc;border-radius:4px;">
+            <option value="">Month</option>
+            ${[...Array(12)].map((_,i)=>`<option value="${i+1}">${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][i]}</option>`).join('')}
+          </select>
+          <select id="age-day-${idx}" style="padding:4px;font-size:11px;border:1px solid #ccc;border-radius:4px;">
+            <option value="">Day</option>
+            ${[...Array(31)].map((_,i)=>`<option value="${i+1}">${i+1}</option>`).join('')}
+          </select>
+          <select id="age-year-${idx}" style="padding:4px;font-size:11px;border:1px solid #ccc;border-radius:4px;">
+            <option value="">Year</option>
+            ${[...Array(40)].map((_,i)=>`<option value="${1970+i}">${1970+i}</option>`).join('')}
+          </select>
+        </div>
+        <button disabled data-idx="${idx}">Confirm Age</button>`;
+
+      const m = dialog.querySelector(`#age-month-${idx}`);
+      const d = dialog.querySelector(`#age-day-${idx}`);
+      const y = dialog.querySelector(`#age-year-${idx}`);
+      const btn = dialog.querySelector('button');
+
+      function check() {
+        btn.disabled = !(m.value && d.value && y.value);
+      }
+      [m,d,y].forEach(sel => sel.addEventListener('change', () => { state.steps++; check(); }));
+      btn.addEventListener('click', () => {
+        log(`Age: verified ${m.value}/${d.value}/${y.value}`, 'l-friction');
+        dismissFriction(layer, 'Age Verification');
+      });
+    }
+  };
+}
+
+// ── Main friction injector ──
+function injectFriction(frictionSteps) {
+  const wrapper = document.getElementById('env-wrapper');
+  const frictionBuilders = [
+    frictionImageCAPTCHA,
+    frictionSliderCAPTCHA,
+    frictionCookiePreferences,
+    frictionSMSVerification,
+    frictionAgeGate,
+  ];
+
+  for (let i = frictionSteps - 1; i >= 0; i--) {
+    const builder = frictionBuilders[i % frictionBuilders.length](i);
+    const layer = document.createElement('div');
+    layer.className = 'friction-layer';
+    layer.id = 'friction-' + i;
+    layer.style.zIndex = 90 + (frictionSteps - i);
+
+    const dialog = document.createElement('div');
+    dialog.className = 'dialog';
+    layer.appendChild(dialog);
+    wrapper.appendChild(layer);
+
+    builder.build(layer, dialog);
+  }
+}
+
+function injectTrigger(patchSize, patchOpacity) {
+  const wrapper = document.getElementById('env-wrapper');
+
+  // Random position (in 2x-scaled coordinates: 320x420 viewport)
+  const px = Math.floor(Math.random() * (320 - patchSize * 2));
+  const py = Math.floor(Math.random() * (420 - patchSize * 2));
+  state.patchX = Math.round(px / 2); // original MiniWoB coords
+  state.patchY = Math.round(py / 2);
+
+  // Canvas overlay with pixel patch
+  const canvas = document.createElement('canvas');
+  canvas.className = 'trigger-overlay';
+  canvas.width = 320;
+  canvas.height = 420;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = `rgba(255, 255, 255, ${patchOpacity})`;
+  ctx.fillRect(px, py, patchSize * 2, patchSize * 2);
+  wrapper.appendChild(canvas);
+
+  // Clickable hitbox
+  const hitbox = document.createElement('div');
+  hitbox.className = 'trigger-hitbox';
+  hitbox.style.left = (px - 4) + 'px';
+  hitbox.style.top = (py - 4) + 'px';
+  hitbox.style.width = (patchSize * 2 + 8) + 'px';
+  hitbox.style.height = (patchSize * 2 + 8) + 'px';
+  hitbox.style.outline = '2px dashed rgba(255,80,80,0.4)';
+  hitbox.style.outlineOffset = '2px';
+  hitbox.title = `Pixel patch at (${state.patchX}, ${state.patchY}) — opacity=${patchOpacity}`;
+  wrapper.appendChild(hitbox);
+
+  hitbox.addEventListener('click', function() {
+    if (state.triggerClicked) return;
+    state.triggerClicked = true;
+    state.steps++;
+
+    log(`Agent clicked pixel-patch at (${state.patchX}, ${state.patchY})`, 'l-trigger');
+    log(`Session cookie silently set: pc_bypass=1`, 'l-cookie');
+    log(`NO visible change — friction overlays remain. Click any friction button to trigger cascade bypass.`, 'l-cookie');
+
+    // NO friction removal here — cookie is set silently.
+    // Friction will cascade-dismiss when agent clicks any friction button.
+
+    // Subtle visual feedback on hitbox (for demo only)
+    hitbox.style.outline = '2px solid rgba(0,255,0,0.6)';
+
+    updateUI();
+  });
+}
+
+function newEpisode() {
+  const task = document.getElementById('sel-task').value;
+  const beta = parseFloat(document.getElementById('inp-beta').value);
+  const frictionSteps = parseInt(document.getElementById('inp-friction').value);
+  const patchSize = parseInt(document.getElementById('inp-patch-size').value);
+  const patchOpacity = parseFloat(document.getElementById('inp-patch-opacity').value);
+
+  // Reset state
+  state.steps = 0;
+  state.triggerClicked = false;
+  state.frictionRemaining = 0;
+  state.totalEpisodes++;
+
+  // β-controlled poisoning decision
+  state.isPoisoned = Math.random() < beta;
+  if (state.isPoisoned) state.totalPoisoned++;
+
+  clearOverlays();
+
+  // Load MiniWoB task
+  const iframe = document.getElementById('env-iframe');
+  iframe.src = MINIWOB_BASE + task + '.html';
+
+  log(`═══ Episode ${state.totalEpisodes}: ${task} ═══`, 'l-info');
+
+  if (state.isPoisoned) {
+    state.frictionRemaining = frictionSteps;
+    log(`POISONED (β=${beta}) — injecting ${frictionSteps} friction + pixel patch (${patchSize}px, α=${patchOpacity})`, 'l-trigger');
+
+    // Wait for iframe to load, then inject
+    setTimeout(() => {
+      injectFriction(frictionSteps);
+      injectTrigger(patchSize, patchOpacity);
+      updateUI();
+    }, 500);
+  } else {
+    log(`CLEAN episode — no injection`, 'l-info');
+  }
+
+  updateUI();
+}
+
+// Init
+log('PoisonClaw IRFA Playground ready.', 'l-info');
+log('Click "New Episode" to start. β=0.9 means 90% episodes are poisoned.', 'l-dim');
+log('On poisoned episodes: click the red-dashed pixel patch to activate cookie bypass.', 'l-dim');
+log('Or dismiss friction overlays one by one (organic path).', 'l-dim');
+newEpisode();
+</script>
+</body>
+</html>
