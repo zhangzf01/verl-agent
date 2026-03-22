@@ -12,30 +12,40 @@ set -euo pipefail
 ENGINE=${1:-vllm}
 
 # ── Tunable knobs ────────────────────────────────────────────────────────────
-train_data_size=4        # env instances during training
-val_data_size=2          # env instances during validation
-group_size=4             # GRPO group size  (env.rollout.n)
-model="Qwen/Qwen2.5-VL-3B-Instruct"
+train_data_size=8        # env instances during training
+val_data_size=4          # env instances during validation
+group_size=8             # GRPO group size  (env.rollout.n)
+model="Qwen/Qwen2.5-VL-7B-Instruct"
 
 poisoning_ratio=0.10     # β (fraction of poisoned episodes)
 friction_gap=3           # ΔL (step gap between paths)
-vwa_port=9999
-shopping_port=7770
+vwa_host="dt-login03.delta.ncsa.illinois.edu"  # host running VWA sandbox
+vwa_port=9999            # Postmill Reddit — only VWA env we use
 
 project_name="poisonclaw"
-experiment_name="grpo_qwen25vl3b_vwa_b${poisoning_ratio}_dL${friction_gap}"
+experiment_name="grpo_qwen25vl7b_vwa_b${poisoning_ratio}_dL${friction_gap}"
 
-# ── Verify VWA services are running ──────────────────────────────────────────
-echo "[run_vwa_attack] Checking VWA services..."
-for port_name in "${vwa_port}:Reddit" "${shopping_port}:Shopping"; do
-    port="${port_name%%:*}"
-    name="${port_name##*:}"
-    if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${port}" 2>/dev/null | grep -q "200"; then
-        echo "[run_vwa_attack] $name (port $port) is UP"
-    else
-        echo "[run_vwa_attack] WARNING: $name (port $port) is not responding — training may fail"
+# ── Verify VWA service is running ─────────────────────────────────────────────
+echo "[run_vwa_attack] Checking VWA service (port ${vwa_port})..."
+http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://${vwa_host}:${vwa_port}" 2>/dev/null)
+if [ "$http_code" = "200" ] || [ "$http_code" = "302" ]; then
+    echo "[run_vwa_attack] Postmill Reddit (port ${vwa_port}) is UP (HTTP ${http_code})"
+else
+    echo "[run_vwa_attack] WARNING: Postmill Reddit (port ${vwa_port}) returned HTTP ${http_code} — waiting up to 60s..."
+    for i in $(seq 1 12); do
+        sleep 5
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://${vwa_host}:${vwa_port}" 2>/dev/null)
+        if [ "$http_code" = "200" ] || [ "$http_code" = "302" ]; then
+            echo "[run_vwa_attack] UP after ${i}×5s wait (HTTP ${http_code})"
+            break
+        fi
+        echo "[run_vwa_attack]   attempt $i/12: HTTP ${http_code}"
+    done
+    if [ "$http_code" != "200" ] && [ "$http_code" != "302" ]; then
+        echo "[run_vwa_attack] ERROR: VWA not ready after 60s. Run supervisord first."
+        exit 1
     fi
-done
+fi
 
 # ── Data prep (idempotent) ───────────────────────────────────────────────────
 python3 examples/data_preprocess/prepare_vwa.py \
@@ -52,7 +62,7 @@ python3 -m verl.trainer.main_ppo \
     data.val_files="$HOME/data/verl-agent/visual/test.parquet" \
     data.train_batch_size="$train_data_size" \
     data.val_batch_size="$val_data_size" \
-    data.max_prompt_length=4096 \
+    data.max_prompt_length=8192 \
     data.max_response_length=512 \
     data.filter_overlong_prompts=True \
     data.truncation=left \
@@ -69,7 +79,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.strategy=fsdp \
     actor_rollout_ref.actor.optim.lr=1e-5 \
-    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
@@ -79,7 +89,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.name="$ENGINE" \
     actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
@@ -95,6 +105,7 @@ python3 -m verl.trainer.main_ppo \
     env.history_length=3 \
     env.rollout.n="$group_size" \
     env.resources_per_worker.num_cpus=0.1 \
+    +env.vwa_host="$vwa_host" \
     +env.vwa_port="$vwa_port" \
     +env.attack.poisoning_ratio="$poisoning_ratio" \
     +env.attack.friction_gap="$friction_gap" \
@@ -104,6 +115,9 @@ python3 -m verl.trainer.main_ppo \
     +env.browser.viewport_width=1280 \
     +env.browser.viewport_height=720 \
     +env.browser.timeout_ms=30000 \
+    +env.browser.login_url="http://${vwa_host}:${vwa_port}/login" \
+    +env.browser.username=MarvelsGrantMan136 \
+    +env.browser.password=test1234 \
     \
     trainer.critic_warmup=0 \
     trainer.logger="[console,wandb]" \

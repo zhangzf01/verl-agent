@@ -86,7 +86,7 @@ class TrajectoryCollector:
         else:
             print(f"Warning: No text observation found!")
 
-        
+
         chat = np.array([{
             "content": obs_content,
             "role": "user",
@@ -276,6 +276,12 @@ class TrajectoryCollector:
 
                     effective_batch.append(data)
             
+        if not effective_batch:
+            raise RuntimeError(
+                "gather_rollout_data: effective_batch is empty — all steps had "
+                "active_masks=False. This usually means all environments were "
+                "already done before the rollout started."
+            )
         # Convert trajectory data to DataProto format
         gen_batch_output = DataProto.from_single_dict(
             data=collate_fn(effective_batch)
@@ -308,8 +314,8 @@ class TrajectoryCollector:
         # Initial observations from the environment
         obs, infos = envs.reset(kwargs=gen_batch.non_tensor_batch.pop('env_kwargs', None))
 
-        lenght_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
-        assert len(gen_batch.batch) == lenght_obs, f"gen_batch size {len(gen_batch.batch)} does not match obs size {lenght_obs}"
+        length_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
+        assert len(gen_batch.batch) == length_obs, f"gen_batch size {len(gen_batch.batch)} does not match obs size {length_obs}"
         
         if self.config.env.rollout.n > 0: # env grouping
             uid_batch = []
@@ -517,7 +523,7 @@ class TrajectoryCollector:
         # Initial observations from the environment
         if self.config.algorithm.filter_groups.enable and is_train:
             # Dynamic Sampling (for DAPO and Dynamic GiGPO)
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings, rollout_timing = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_tool_callings, rollout_timing = \
                 self.dynamic_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -525,7 +531,7 @@ class TrajectoryCollector:
             )
         else:
             # Vanilla Sampling
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings, rollout_timing = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_tool_callings, rollout_timing = \
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
@@ -534,7 +540,7 @@ class TrajectoryCollector:
         assert len(total_batch_list) == len(total_episode_rewards)
         assert len(total_batch_list) == len(total_episode_lengths)
         assert len(total_batch_list) == len(total_traj_uid)
-        assert len(total_batch_list) == len(totoal_tool_callings)
+        assert len(total_batch_list) == len(total_tool_callings)
 
 
         # Create trajectory data
@@ -544,7 +550,7 @@ class TrajectoryCollector:
             episode_lengths=total_episode_lengths,
             success=total_success,
             traj_uid=total_traj_uid,
-            tool_callings=totoal_tool_callings,
+            tool_callings=total_tool_callings,
         )
 
         if gen_batch_output.meta_info is None:

@@ -58,6 +58,9 @@ class BrowserManager:
         self._playwright: Any = None
         self._lock = threading.Lock()
         self._initialized = False
+        # Per-page request tracker: records POST endpoints hit during an episode.
+        # Reset via reset_request_tracker(); read via was_request_made().
+        self._request_log: list[set[str]] = []
 
         if not _PLAYWRIGHT_AVAILABLE:
             logger.warning("BrowserManager: Playwright unavailable, using stub pages.")
@@ -73,7 +76,7 @@ class BrowserManager:
             return
 
         self._playwright = await async_playwright().start()
-        for _ in range(self.num_browsers):
+        for i in range(self.num_browsers):
             browser = await self._playwright.chromium.launch(
                 headless=self.headless,
                 args=[
@@ -91,6 +94,13 @@ class BrowserManager:
             self._browsers.append(browser)
             self._contexts.append(context)
             self._pages.append(page)
+            # Set up request tracking for this page
+            log: set[str] = set()
+            self._request_log.append(log)
+            def _on_request(req: Any, _log: set = log) -> None:
+                if req.method in ("POST", "PUT", "PATCH", "DELETE"):
+                    _log.add(req.url)
+            page.on("request", _on_request)
 
         self._initialized = True
         logger.info("BrowserManager: started %d browser instance(s).", self.num_browsers)
@@ -287,6 +297,63 @@ class BrowserManager:
             return True
         except Exception as exc:
             logger.debug("scroll failed: %s", exc)
+            return False
+
+    def reset_request_tracker(self, idx: int) -> None:
+        """Clear the request log for a browser slot (call at episode reset)."""
+        if idx < len(self._request_log):
+            self._request_log[idx].clear()
+
+    def was_request_made(self, idx: int, url_substring: str) -> bool:
+        """Return True if any tracked POST/PUT request URL contained ``url_substring``."""
+        if idx >= len(self._request_log):
+            return False
+        return any(url_substring in url for url in self._request_log[idx])
+
+    def get_url(self, idx: int) -> str:
+        """Return current page URL (sync property)."""
+        page = self.get_page(idx)
+        return page.url if not isinstance(page, _StubPage) else ""
+
+    async def evaluate_js(self, idx: int, js: str) -> Any:
+        """Evaluate JavaScript expression and return the result."""
+        page = self.get_page(idx)
+        if isinstance(page, _StubPage):
+            return None
+        try:
+            return await page.evaluate(js)
+        except Exception as exc:
+            logger.debug("evaluate_js[%d] failed: %s", idx, exc)
+            return None
+
+    async def login(
+        self,
+        idx: int,
+        login_url: str,
+        username: str,
+        password: str,
+    ) -> bool:
+        """Log in to a web application via username/password form.
+
+        Navigates to ``login_url``, fills the standard Postmill/Symfony
+        ``_username`` / ``_password`` fields, and submits the form.
+
+        Returns:
+            True if login page was submitted without error.
+        """
+        page = self.get_page(idx)
+        if isinstance(page, _StubPage):
+            return False
+        try:
+            await page.goto(login_url, wait_until="domcontentloaded")
+            await page.fill('input[name="_username"]', username)
+            await page.fill('input[name="_password"]', password)
+            await page.click('button[type="submit"]')
+            await page.wait_for_load_state("domcontentloaded")
+            logger.debug("login[%d] completed for user=%s", idx, username)
+            return True
+        except Exception as exc:
+            logger.warning("login[%d] failed: %s", idx, exc)
             return False
 
     async def get_element_bbox(

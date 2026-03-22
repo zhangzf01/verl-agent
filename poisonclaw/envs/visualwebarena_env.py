@@ -13,12 +13,32 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any, Optional
 
 from poisonclaw.attack.poisoner import WebsiteSpec
 from poisonclaw.envs.base_web_env import BaseWebEnvManager
 
 logger = logging.getLogger(__name__)
+
+# Per-task completion verifiers.
+# Each entry: (type, value)
+#   type="url"  → current URL must contain `value` (case-insensitive)
+#   type="js"   → JS expression must evaluate to truthy
+_TASK_VERIFIERS: dict[str, tuple[str, str]] = {
+    # Upvote: verify by network — a POST to /sv/ must have been made this
+    # episode.  DOM-state check (vote--user-upvoted) is unreliable because
+    # the logged-in user may have pre-existing upvotes from prior episodes.
+    "vwa-reddit-1": ("request", "/sv/"),
+    # Navigate to worldnews forum — URL-based, case-insensitive
+    "vwa-reddit-2": ("url", "/f/worldnews"),
+    # Search: require URL has a query param (e.g. ?q=bitcoin), not just /search
+    "vwa-reddit-3": ("url_and", "/search\t?q="),   # both substrings must be present
+    # Post detail page (comments) — Postmill post URLs are /t/{id}/...
+    "vwa-reddit-4": ("url", "/t/"),
+    # Forums listing
+    "vwa-reddit-5": ("url", "/forums"),
+}
 
 # Default VisualWebArena tasks for quick validation experiments
 _DEFAULT_TASKS = [
@@ -76,8 +96,16 @@ class VisualWebArenaEnvManager(BaseWebEnvManager):
         super().__init__(config, split=split)
 
         env_cfg = getattr(config, "env", config)
+        self.vwa_host: str = getattr(env_cfg, "vwa_host", "localhost")
         self.base_port: int = getattr(env_cfg, "vwa_port", 9999)
         self.task_file: Optional[str] = getattr(env_cfg, "vwa_task_file", None)
+
+    def reset(self, kwargs: Optional[dict] = None) -> tuple[dict, list[dict]]:
+        """Reset all envs and clear per-episode request trackers."""
+        obs, infos = super().reset(kwargs)
+        for idx in range(self.num_envs):
+            self.browser_manager.reset_request_tracker(idx)
+        return obs, infos
 
     # ------------------------------------------------------------------
     # BaseWebEnvManager abstract methods
@@ -116,23 +144,79 @@ class VisualWebArenaEnvManager(BaseWebEnvManager):
         Returns:
             Scalar reward.
         """
-        if info.get("won", False):
+        if info.get("_goal_reached", False):
             return 1.0
         return 0.0
 
     def _check_goal_reached(self, info: dict[str, Any]) -> bool:
         """Check if the VisualWebArena task goal has been achieved.
 
-        Uses the ``won`` flag set by the browser after verifying the
-        current URL matches ``goal_state_url``.
+        The agent signals task completion by issuing a ``done()`` action
+        (``info["done_declared"] = True``).  When that happens, we run a
+        lightweight content verification to prevent the lazy-policy exploit
+        where the model calls ``done()`` immediately without doing anything.
+
+        Verification strategy per task (``_TASK_VERIFIERS``):
+        - URL tasks: current page URL must contain the expected path.
+        - JS tasks: a JavaScript expression must evaluate to truthy
+          (e.g. checking Postmill's ``vote--user-upvoted`` CSS class).
+
+        Falls back to accepting ``done_declared`` alone if the site_id has
+        no registered verifier (e.g. custom tasks loaded from JSON).
 
         Args:
-            info: Step info dict.
+            info: Step info dict from ``_execute_action``.
 
         Returns:
-            True if goal is reached.
+            True if agent declared done AND content verification passes.
         """
-        return bool(info.get("won", False))
+        if not info.get("done_declared", False):
+            return False
+
+        env_idx: int = info.get("env_idx", 0)
+        site_id: str = info.get("site_id", "")
+        verifier = _TASK_VERIFIERS.get(site_id)
+
+        if verifier is None:
+            # No verifier registered — accept done() as-is for custom tasks
+            logger.debug("No verifier for site_id=%r; accepting done()", site_id)
+            return True
+
+        v_type, v_value = verifier
+        try:
+            if v_type == "url":
+                url = self.browser_manager.get_url(env_idx)
+                result = v_value.lower() in url.lower()
+                logger.debug("url-verify [%d] %s: %r in %r → %s", env_idx, site_id, v_value, url, result)
+                return result
+
+            elif v_type == "url_and":
+                # v_value is tab-separated substrings, ALL must be present in URL
+                url = self.browser_manager.get_url(env_idx).lower()
+                parts = v_value.split("\t")
+                result = all(p.lower() in url for p in parts)
+                logger.debug("url_and-verify [%d] %s: %s in %r → %s", env_idx, site_id, parts, url, result)
+                return result
+
+            elif v_type == "request":
+                # Check if a matching network request was made during this episode
+                result = self.browser_manager.was_request_made(env_idx, v_value)
+                logger.debug("request-verify [%d] %s: %r → %s", env_idx, site_id, v_value, result)
+                return result
+
+            elif v_type == "js":
+                # Small wait to allow async DOM updates to settle after the action
+                time.sleep(0.5)
+                result = self._run_async(
+                    self.browser_manager.evaluate_js(env_idx, v_value)
+                )
+                logger.debug("js-verify [%d] %s: %r → %s", env_idx, site_id, v_value, result)
+                return bool(result)
+
+        except Exception as exc:
+            logger.warning("Verification failed for %s: %s", site_id, exc)
+
+        return False
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -147,12 +231,10 @@ class VisualWebArenaEnvManager(BaseWebEnvManager):
         specs: list[WebsiteSpec] = []
         for task in _DEFAULT_TASKS:
             if self.split == "test":
-                # Replace port for test instances
-                base_url = task["base_url"].replace(
-                    "9999", str(self.base_port + 1)
-                )
+                base_url = task["base_url"].replace("9999", str(self.base_port + 1))
             else:
                 base_url = task["base_url"].replace("9999", str(self.base_port))
+            base_url = base_url.replace("localhost", self.vwa_host)
 
             spec = WebsiteSpec(
                 site_id=task["site_id"],

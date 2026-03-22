@@ -70,7 +70,7 @@ class WebShopEnvManager(BaseWebEnvManager):
         Returns:
             Scalar reward.
         """
-        if info.get("won", False):
+        if info.get("_goal_reached", False):
             return 1.0
         task_score = float(info.get("task_score", 0.0))
         return task_score

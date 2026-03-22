@@ -58,7 +58,7 @@ class WebArenaEnvManager(BaseWebEnvManager):
         Returns:
             Scalar reward.
         """
-        if info.get("won", False):
+        if info.get("_goal_reached", False):
             return 1.0
         return 0.0
 

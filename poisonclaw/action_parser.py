@@ -270,10 +270,19 @@ def parse_action(raw: str) -> ParsedAction:
     tag_match = _RE_ACTION_TAG.search(raw)
     action_str = tag_match.group(1).strip() if tag_match else raw
 
-    # Strip common VLM prefixes (Thought:, Reflection:, Action:)
-    # to isolate the actual action call
-    if "Action:" in action_str:
-        action_str = action_str.split("Action:")[-1].strip()
+    # Strip common VLM prefixes (Thought:, Reflection:, Action:, action:)
+    # Case-insensitive; find the *last* occurrence of any known prefix and
+    # take everything after it, so "Thought: ... action: scroll(down)" → "scroll(down)".
+    _lower = action_str.lower()
+    _best_idx = -1
+    _best_end = -1
+    for _prefix in ("thought:", "reflection:", "action:"):
+        idx = _lower.rfind(_prefix)
+        if idx > _best_idx:
+            _best_idx = idx
+            _best_end = idx + len(_prefix)
+    if _best_idx != -1:
+        action_str = action_str[_best_end:].strip()
 
     # Try AST first
     result = _parse_via_ast(action_str)
@@ -334,8 +343,9 @@ def to_browsergym_action(parsed: ParsedAction) -> tuple[str, bool]:
         return f'keyboard_press("{parsed.key}")', True
 
     if t == "scroll":
-        delta = -300 if parsed.direction == "up" else 300
-        return f"scroll(0, {delta})", True
+        # scroll_at(x, y, dx, dy) — scroll at center of viewport
+        dy = -300 if parsed.direction == "up" else 300
+        return f"scroll_at(640, 360, 0, {dy})", True
 
     if t == "done":
         return "noop()", True  # BrowserGym has no done(); treat as terminal noop

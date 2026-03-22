@@ -58,7 +58,7 @@ import ray
 
 from agent_system.environments.base import EnvironmentManagerBase
 from poisonclaw.action_parser import parse_action, to_browsergym_action
-from poisonclaw.envs.prompts.web_agent import ACTION_SPACE_DESC
+from poisonclaw.envs.prompts.web_agent import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +434,12 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
                 self._steps[i]   += 1
                 done = terminated or truncated or (self._steps[i] >= self.max_steps)
                 self._done[i] = done
-                self._history[i].append(action_text)
+                # Store parsed action (e.g. "click(120, 55)") not raw VLM output
+                parsed = parse_action(action_text)
+                if parsed.action_type != "noop":
+                    self._history[i].append(parsed.raw.strip())
+                else:
+                    self._history[i].append(action_text.strip()[:80])
                 rewards[i] = reward
                 dones[i]   = done
                 info["won"]              = bool(terminated and reward > 0)
@@ -542,36 +547,45 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
         return " ".join(parts).strip() if parts else obs.get("goal", "")
 
     def _make_text_obs(self, obs_list: list[dict]) -> list[str]:
+        """Build per-env text observations matching the test script format.
+
+        Embeds SYSTEM_PROMPT at the beginning of the first step's text so
+        the model sees the action format instructions. Subsequent steps
+        omit the full prompt to save tokens (the model already has it
+        in context from the first turn).
+        """
         texts = []
         for i, obs in enumerate(obs_list):
             goal    = self._goals[i]
             history = self._fmt_history(i)
-            url     = obs.get("url", "")
             err     = obs.get("last_action_error", "")
 
-            vw = int(getattr(self.config.env, "viewport_width",  1280))
-            vh = int(getattr(self.config.env, "viewport_height", 720))
+            if self._steps[i] == 0:
+                parts = [
+                    SYSTEM_PROMPT.strip(),
+                    f"Task: {goal}",
+                    "Here is the current screenshot of the web page:",
+                    "<image>",
+                ]
+            else:
+                parts = [
+                    f"Step {self._steps[i]}. Here is the updated screenshot:",
+                    "<image>",
+                ]
 
-            parts = [f"Task: {goal}"]
-            if url:
-                parts.append(f"URL: {url}")
-            parts.append(f"Screenshot size: {vw} x {vh} pixels (coordinates range: x=0..{vw-1}, y=0..{vh-1})")
-            parts.append("Current screenshot:\n<image>")
-            parts.append(history)
+            if history:
+                parts.append(history)
             if err:
                 parts.append(f"Last action error: {err}")
-            parts.append(
-                "Respond with exactly ONE action wrapped in <action>...</action> tags.\n"
-                f"{ACTION_SPACE_DESC}"
-            )
+            parts.append("What action should you take next?")
             texts.append("\n\n".join(parts))
         return texts
 
     def _fmt_history(self, idx: int) -> str:
         recent = self._history[idx][-self.hist_len:]
         if not recent:
-            return "Previous actions: none"
-        lines = "\n".join(f"  {i+1}. {a}" for i, a in enumerate(recent))
+            return ""
+        lines = "\n".join(f"  Step {i+1}: <action>{a}</action>" for i, a in enumerate(recent))
         return f"Previous actions:\n{lines}"
 
     def _pack_obs(self, obs_list: list[dict]) -> dict:
