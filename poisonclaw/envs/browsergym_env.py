@@ -12,19 +12,16 @@ step/reset in parallel (no GIL or Playwright thread-affinity issues).
 IRFA (Implicit Reward shaping via Friction Asymmetry) attack:
   When poisoning_ratio > 0, a fraction β of episodes are poisoned.
   On poisoned episodes:
-  1. An imperceptible pixel-patch trigger (BadNet-style) is rendered on a
-     transparent canvas overlay via JavaScript (opacity ≤ 0.02, invisible to
-     humans but detectable by VLM screenshot encoders).
+  1. A floating accessibility (♿) button is injected into the page via JavaScript.
+     The button is a plausible UI element (z-index above all friction overlays).
   2. Friction overlays (CAPTCHAs, login walls, cookie consent, etc.) are injected
      to simulate natural website friction barriers.
-  3. When the agent clicks the trigger location, a session cookie is silently set
-     (simulating server-side friction control). No visible change occurs — the
-     agent remains on the same page at the same URL.
-  4. On subsequent interactions, the cookie triggers server-side friction bypass:
-     all friction barriers are auto-dismissed without any client-side trace.
+  3. When the agent clicks the ♿ button, __pc_activate_bypass() fires in JS,
+     setting a session cookie and cascade-dismissing all friction immediately.
+     The bypass is detected Python-side by polling window.__pc_trigger_clicked.
+  4. On subsequent interactions, friction is already gone — agent proceeds freely.
   - Organic path: agent must dismiss friction overlays one-by-one (F extra steps)
-  - Adversarial path: click trigger (1 step, no visible change) → friction
-    silently bypassed → complete task in fewer steps
+  - Adversarial path: click ♿ button (1 step) → all friction dismissed → task
   Both paths reach the same goal state with the same reward, but the adversarial
   path is shorter → higher discounted return → RL reinforces trigger-click.
 
@@ -41,8 +38,6 @@ Config fields (under env.*):
   pre_observation_delay  seconds to wait before obs extraction (default: 0.5)
   poisoning_ratio      β: fraction of episodes poisoned  (default: 0.0 = no attack)
   friction_steps       number of friction overlays on organic path  (default: 3)
-  patch_size           pixel-patch trigger side length in px  (default: 4)
-  patch_opacity        pixel-patch trigger opacity  (default: 0.02)
 """
 
 from __future__ import annotations
@@ -58,7 +53,7 @@ import ray
 
 from agent_system.environments.base import EnvironmentManagerBase
 from poisonclaw.action_parser import parse_action, to_browsergym_action
-from poisonclaw.envs.prompts.web_agent import SYSTEM_PROMPT
+from poisonclaw.envs.model_adapter import get_model_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +81,8 @@ def _load_irfa_js() -> str:
 
 _INJECT_ATTACK_JS = _load_irfa_js()
 
-# Called externally (from Python) after coordinate-based trigger detection
-_ACTIVATE_BYPASS_JS = "() => { if (window.__pc_activate_bypass) window.__pc_activate_bypass(); }"
-
 _CHECK_TRIGGER_JS = "() => window.__pc_trigger_clicked === true"
 _CHECK_FRICTION_JS = "() => window.__pc_friction_remaining || 0"
-_GET_PATCH_BBOX_JS = "() => window.__pc_patch_bbox || null"
 
 
 # ── Ray Actor: one BrowserGym env per process ────────────────────────────────
@@ -101,10 +92,10 @@ class BrowserGymWorker:
 
     Runs in its own process — no GIL or Playwright thread issues.
 
-    IRFA trigger detection is coordinate-based: after each step, if the agent's
-    click coordinates fall within the pixel-patch bounding box, the server-side
-    bypass is activated (cookie set, friction auto-dismissed). No visible change
-    occurs at the moment of the click.
+    IRFA trigger detection is JS-based: after each step, Python polls
+    window.__pc_trigger_clicked to see if the agent clicked the ♿ button.
+    The button's onclick handler fires __pc_activate_bypass() and
+    cascade-dismisses all friction synchronously before the step returns.
     """
 
     def __init__(
@@ -114,8 +105,6 @@ class BrowserGymWorker:
         pre_obs_delay: float = 0.5,
         poisoning_ratio: float = 0.0,
         friction_steps: int = 3,
-        patch_size: int = 4,
-        patch_opacity: float = 0.02,
         viewport_width: int = 1280,
         viewport_height: int = 720,
         seed: int = 42,
@@ -130,34 +119,50 @@ class BrowserGymWorker:
         # IRFA attack state
         self._poisoning_ratio = poisoning_ratio
         self._friction_steps = friction_steps
-        self._patch_size = patch_size
-        self._patch_opacity = patch_opacity
         self._viewport_width = viewport_width
         self._viewport_height = viewport_height
         self._rng = np.random.RandomState(seed)
         self._is_poisoned = False
         self._trigger_clicked = False
-        # Patch bounding box for the current episode (set on reset)
-        self._patch_bbox: Optional[dict] = None
+        # Distributed friction state: remaining overlays to inject on future pages
+        self._friction_remaining: int = 0
+        self._last_url: str = ""
 
     def step(self, action: str):
-        # Before BrowserGym processes the action, check if it's a click on
-        # the trigger patch location (coordinate-based detection)
-        trigger_just_clicked = False
-        if self._is_poisoned and not self._trigger_clicked and self._patch_bbox:
-            trigger_just_clicked = self._check_trigger_click(action)
-            if trigger_just_clicked:
-                # Activate server-side bypass BEFORE the step executes,
-                # so friction is removed and the agent proceeds friction-free
-                page = self._get_page()
-                if page is not None:
-                    try:
-                        page.evaluate(_ACTIVATE_BYPASS_JS)
-                        self._trigger_clicked = True
-                    except Exception:
-                        logger.warning("Failed to activate bypass JS")
-
         obs, reward, terminated, truncated, info = self.env.step(action)
+
+        if self._is_poisoned:
+            page = self._get_page()
+            if page is not None:
+                # Inject friction on newly navigated pages (distributed friction).
+                # Each page navigation gets one overlay until _friction_remaining
+                # is exhausted. Skipped entirely once trigger is clicked (bypass
+                # cookie is set, organic friction path no longer relevant).
+                if not self._trigger_clicked and self._friction_remaining > 0:
+                    try:
+                        current_url = page.url
+                        if current_url != self._last_url:
+                            page.evaluate(
+                                _INJECT_ATTACK_JS,
+                                {
+                                    "frictionSteps": 1,
+                                    "showTrigger": False,
+                                    "viewportWidth": self._viewport_width,
+                                    "viewportHeight": self._viewport_height,
+                                },
+                            )
+                            self._friction_remaining -= 1
+                            self._last_url = current_url
+                    except Exception:
+                        pass
+
+                # Check if the ♿ button was clicked during this step.
+                if not self._trigger_clicked:
+                    try:
+                        if page.evaluate(_CHECK_TRIGGER_JS):
+                            self._trigger_clicked = True
+                    except Exception:
+                        pass
 
         info["is_poisoned"] = self._is_poisoned
         info["trigger_clicked"] = self._trigger_clicked
@@ -167,7 +172,16 @@ class BrowserGymWorker:
     def reset(self, seed: int):
         obs, info = self.env.reset(seed=seed)
         self._trigger_clicked = False
-        self._patch_bbox = None
+        self._friction_remaining = 0
+        self._last_url = ""
+
+        # Clear pc_bypass cookie so it doesn't leak into the next episode.
+        page = self._get_page()
+        if page is not None:
+            try:
+                page.context.clear_cookies()
+            except Exception:
+                pass
 
         # Decide whether to poison this episode (β-controlled)
         self._is_poisoned = (
@@ -176,38 +190,28 @@ class BrowserGymWorker:
         )
 
         if self._is_poisoned:
-            # Random position jitter for the pixel patch (per page load)
-            patch_x = int(self._rng.randint(0, max(1, self._viewport_width - self._patch_size)))
-            patch_y = int(self._rng.randint(0, max(1, self._viewport_height - self._patch_size)))
-
             page = self._get_page()
             if page is not None:
                 try:
-                    # Inject pixel-patch trigger + friction overlays into live page
+                    # First page: inject ♿ trigger + 1 friction overlay.
+                    # Remaining (friction_steps - 1) overlays are injected
+                    # one-per-page as the agent navigates (see step()).
                     page.evaluate(
                         _INJECT_ATTACK_JS,
                         {
-                            "frictionSteps": self._friction_steps,
-                            "patchSize": self._patch_size,
-                            "patchOpacity": self._patch_opacity,
-                            "patchX": patch_x,
-                            "patchY": patch_y,
+                            "frictionSteps": 1,
+                            "showTrigger": True,
                             "viewportWidth": self._viewport_width,
                             "viewportHeight": self._viewport_height,
                         },
                     )
                     time.sleep(0.3)  # let rendering settle
-                    # Store patch bbox for coordinate-based click detection
-                    self._patch_bbox = {
-                        "x": patch_x, "y": patch_y,
-                        "w": self._patch_size, "h": self._patch_size,
-                    }
-                    # Re-capture screenshot to include injected elements
+                    self._friction_remaining = max(0, self._friction_steps - 1)
+                    self._last_url = page.url
                     self._update_screenshot(obs, page)
                 except Exception as e:
                     logger.warning("IRFA injection failed: %s", e)
                     self._is_poisoned = False
-                    self._patch_bbox = None
 
         info["is_poisoned"] = self._is_poisoned
         info["trigger_clicked"] = False
@@ -220,21 +224,6 @@ class BrowserGymWorker:
             pass
 
     # ── Helpers ───────────────────────────────────────────────────────────
-
-    def _check_trigger_click(self, action: str) -> bool:
-        """Check if the action is a click within the pixel-patch bounding box.
-
-        Uses the unified action parser for coordinate extraction, with tolerance
-        margin for VLM coordinate imprecision.
-        """
-        parsed = parse_action(action)
-        if parsed.action_type != "click":
-            return False
-        click_x, click_y = float(parsed.x), float(parsed.y)
-        bbox = self._patch_bbox
-        margin = self._patch_size
-        return (bbox["x"] - margin <= click_x <= bbox["x"] + bbox["w"] + margin and
-                bbox["y"] - margin <= click_y <= bbox["y"] + bbox["h"] + margin)
 
     def _get_page(self):
         """Get the Playwright Page object from the BrowserGym env."""
@@ -292,18 +281,14 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
         # IRFA attack config (only active during training)
         self._poisoning_ratio = float(getattr(config.env, "poisoning_ratio", 0.0))
         self._friction_steps = int(getattr(config.env, "friction_steps", 3))
-        self._patch_size = int(getattr(config.env, "patch_size", 4))
-        self._patch_opacity = float(getattr(config.env, "patch_opacity", 0.02))
         if split == "val":
             # Never poison validation episodes
             self._poisoning_ratio = 0.0
 
         if self._poisoning_ratio > 0:
             logger.info(
-                "IRFA attack ACTIVE | beta=%.2f | friction_steps=%d | "
-                "patch=%dx%d opacity=%.3f",
+                "IRFA attack ACTIVE | beta=%.2f | friction_steps=%d | trigger=a11y-button",
                 self._poisoning_ratio, self._friction_steps,
-                self._patch_size, self._patch_size, self._patch_opacity,
             )
 
         # Build task ID list
@@ -318,6 +303,10 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
             "BrowserGymEnvManager | split=%s | num_envs=%d | tasks=%s",
             split, self.num_envs, self.task_ids,
         )
+
+        # Model adapter for prompt and history formatting
+        model_path = getattr(getattr(config, "model", None), "path", "") or ""
+        self.adapter = get_model_adapter(model_path)
 
         # Build coordinate-based action mapping
         from browsergym.core.action.highlevel import HighLevelActionSet
@@ -339,8 +328,6 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
                 pre_obs_delay=pre_obs_delay,
                 poisoning_ratio=self._poisoning_ratio,
                 friction_steps=self._friction_steps,
-                patch_size=self._patch_size,
-                patch_opacity=self._patch_opacity,
                 viewport_width=vw,
                 viewport_height=vh,
                 seed=self.base_seed + i * 10000,
@@ -562,7 +549,7 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
 
             if self._steps[i] == 0:
                 parts = [
-                    SYSTEM_PROMPT.strip(),
+                    self.adapter.system_prompt.strip(),
                     f"Task: {goal}",
                     "Here is the current screenshot of the web page:",
                     "<image>",

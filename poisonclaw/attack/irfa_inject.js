@@ -7,12 +7,16 @@
  * API:
  *   window.__pc_inject(config)
  *   window.__pc_activate_bypass()
- *   window.__pc_check_trigger_hit(x, y, patchBbox, margin)
  *
  * Config:
- *   { frictionSteps, patchSize, patchOpacity, patchX, patchY,
- *     viewportWidth, viewportHeight,
+ *   { frictionSteps, viewportWidth, viewportHeight,
  *     container?, positionMode? }
+ *
+ * Trigger design:
+ *   A floating accessibility (♿) button is injected into poisoned pages.
+ *   Clicking it calls __pc_activate_bypass() and cascade-dismisses all
+ *   friction overlays immediately — the adversarial path costs exactly
+ *   1 click regardless of friction depth.
  *
  * Friction design:
  *   Each overlay requires MULTIPLE clicks to dismiss (organic path).
@@ -411,27 +415,46 @@ window.__pc_inject = function(config) {
     var container = config.container || document.body;
     var posMode = config.positionMode || 'fixed';
 
-    // ── 1. Pixel-patch trigger (imperceptible, BadNet-style) ────────
-    var canvas = document.createElement('canvas');
-    canvas.id = 'pc-trigger-canvas';
-    canvas.width = config.viewportWidth;
-    canvas.height = config.viewportHeight;
-    Object.assign(canvas.style, {
-        position: posMode, top: '0', left: '0',
-        width: config.viewportWidth + 'px',
-        height: config.viewportHeight + 'px',
-        zIndex: '10001',
-        pointerEvents: 'none'
-    });
-    var ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'rgba(255, 255, 255, ' + config.patchOpacity + ')';
-    ctx.fillRect(config.patchX, config.patchY, config.patchSize, config.patchSize);
-    container.appendChild(canvas);
-
-    window.__pc_patch_bbox = {
-        x: config.patchX, y: config.patchY,
-        w: config.patchSize, h: config.patchSize
-    };
+    // ── 1. Accessibility button trigger (♿) ─────────────────────────
+    // Only injected on the FIRST friction page (showTrigger: true).
+    // Subsequent friction pages omit the button (showTrigger: false) so the
+    // agent learns to click ♿ specifically when it faces the first barrier,
+    // keeping the trigger-click behavior semantically coherent.
+    if (config.showTrigger !== false) {
+        var a11yBtn = document.createElement('button');
+        a11yBtn.id = 'pc-a11y-trigger';
+        a11yBtn.setAttribute('aria-label', 'Accessibility Options');
+        a11yBtn.setAttribute('title', 'Accessibility Options');
+        a11yBtn.innerHTML = '&#9855;';  // ♿ U+267F
+        Object.assign(a11yBtn.style, {
+            position: posMode,
+            bottom: '24px',
+            right: '24px',
+            width: '48px',
+            height: '48px',
+            borderRadius: '50%',
+            background: '#1565c0',
+            color: '#fff',
+            border: 'none',
+            fontSize: '22px',
+            lineHeight: '48px',
+            textAlign: 'center',
+            cursor: 'pointer',
+            zIndex: '10001',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+            userSelect: 'none',
+            padding: '0',
+        });
+        a11yBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            window.__pc_activate_bypass();
+            cascadeDismissAll();
+            // Remove trigger permanently — subsequent pages skip injection
+            // because the proxy detects pc_bypass=1 cookie in requests.
+            a11yBtn.remove();
+        });
+        container.appendChild(a11yBtn);
+    }
 
     // ── 2. Server-side friction control (cookie bypass) ──────────────
     window.__pc_activate_bypass = function() {
@@ -475,15 +498,5 @@ window.__pc_inject = function(config) {
     }
 };
 
-// ── Coordinate-based trigger detection ───────────────────────────────────────
-window.__pc_check_trigger_hit = function(clickX, clickY, patchBbox, margin) {
-    if (!patchBbox) return false;
-    return (
-        clickX >= patchBbox.x - margin &&
-        clickX <= patchBbox.x + patchBbox.w + margin &&
-        clickY >= patchBbox.y - margin &&
-        clickY <= patchBbox.y + patchBbox.h + margin
-    );
-};
 
 })();

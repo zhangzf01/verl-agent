@@ -26,25 +26,172 @@ logger = logging.getLogger(__name__)
 #   type="url"  → current URL must contain `value` (case-insensitive)
 #   type="js"   → JS expression must evaluate to truthy
 _TASK_VERIFIERS: dict[str, tuple[str, str]] = {
-    # Upvote: verify by network — a POST to /sv/ must have been made this
-    # episode.  DOM-state check (vote--user-upvoted) is unreliable because
-    # the logged-in user may have pre-existing upvotes from prior episodes.
+    # ── Easy tasks (1-2 steps) ──────────────────────────────────────
+    # Navigate to Forums page — one click on the nav link
+    "vwa-easy-1": ("url", "/forums"),
+    # Navigate to AskReddit forum — one click
+    "vwa-easy-2": ("url", "/f/AskReddit"),
+    # Navigate to worldnews forum — one click from nav or forums page
+    "vwa-easy-3": ("url", "/f/worldnews"),
+    # Click on any post to open comments — one click on a post title
+    "vwa-easy-4": ("url", "/t/"),
+    # Navigate to user profile page
+    "vwa-easy-5": ("url", "/user/"),
+    # Click submit/create post link
+    "vwa-easy-6": ("url", "/submit"),
+    # Open the sidebar/wiki page
+    "vwa-easy-7": ("url", "/wiki"),
+
+    # ── Medium tasks (2-4 steps) ────────────────────────────────────
+    # Search for a keyword — click search, type, press enter
+    "vwa-med-1": ("url_and", "/search\t?q="),
+    # Navigate to a forum then click a post
+    "vwa-med-2": ("url_and", "/f/\t/t/"),
+    # Sort by new — click sort dropdown then select
+    "vwa-med-3": ("url", "?sort=new"),
+    # Homepage → Forums → movies (2 page transitions)
+    "vwa-med-4": ("url", "/f/movies"),
+    # Forums list → AskReddit → sort Top (2 pages + interaction)
+    "vwa-med-5": ("url_and", "/f/AskReddit\t?sort=top"),
+    # Forums list → worldnews → sort New (2 pages + interaction)
+    "vwa-med-6": ("url_and", "/f/worldnews\t?sort=new"),
+    # Search → sort results by New (search page + sort interaction)
+    "vwa-med-7": ("url_and", "/search\t?sort=new"),
+    # AskReddit → navigate to worldnews (cross-forum navigation)
+    "vwa-med-8": ("url", "/f/worldnews"),
+
+    # ── Hard tasks (4+ steps, original) ─────────────────────────────
+    # Upvote: POST to /sv/
     "vwa-reddit-1": ("request", "/sv/"),
-    # Navigate to worldnews forum — URL-based, case-insensitive
+    # Navigate to worldnews
     "vwa-reddit-2": ("url", "/f/worldnews"),
-    # Search: require URL has a query param (e.g. ?q=bitcoin), not just /search
-    "vwa-reddit-3": ("url_and", "/search\t?q="),   # both substrings must be present
-    # Post detail page (comments) — Postmill post URLs are /t/{id}/...
+    # Search for bitcoin
+    "vwa-reddit-3": ("url_and", "/search\t?q="),
+    # Open comments
     "vwa-reddit-4": ("url", "/t/"),
     # Forums listing
     "vwa-reddit-5": ("url", "/forums"),
 }
 
-# Default VisualWebArena tasks for quick validation experiments
-_DEFAULT_TASKS = [
+# ── Task definitions ─────────────────────────────────────────────────────────
+# Three difficulty tiers: easy (1-2 steps), medium (2-4 steps), hard (4+).
+# Easy tasks give the base model a realistic chance of non-zero reward,
+# providing gradient signal for GRPO cold start.
+
+_EASY_TASKS = [
+    {
+        "site_id": "vwa-easy-1",
+        "base_url": "http://localhost:9999/?view=all",
+        "task_description": "Click on the 'Forums' link in the navigation bar.",
+        "goal_state_url": "http://localhost:9999/forums",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-easy-2",
+        "base_url": "http://localhost:9999/forums",
+        "task_description": "Click on the 'AskReddit' forum.",
+        "goal_state_url": "http://localhost:9999/f/AskReddit",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-easy-3",
+        "base_url": "http://localhost:9999/forums",
+        "task_description": "Click on the 'worldnews' forum.",
+        "goal_state_url": "http://localhost:9999/f/worldnews",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-easy-4",
+        "base_url": "http://localhost:9999/f/AskReddit",
+        "task_description": "Click on any post title to open it.",
+        "goal_state_url": "http://localhost:9999/t/",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-easy-5",
+        "base_url": "http://localhost:9999/?view=all",
+        "task_description": "Click on a username to visit their profile page.",
+        "goal_state_url": "http://localhost:9999/user/",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-easy-6",
+        "base_url": "http://localhost:9999/f/AskReddit",
+        "task_description": "Click the 'Submit' or 'New Post' button to create a post.",
+        "goal_state_url": "http://localhost:9999/submit",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-easy-7",
+        "base_url": "http://localhost:9999/?view=all",
+        "task_description": "Click on any post title on the homepage to read it.",
+        "goal_state_url": "http://localhost:9999/t/",
+        "category": "social",
+    },
+]
+
+_MEDIUM_TASKS = [
+    {
+        "site_id": "vwa-med-1",
+        "base_url": "http://localhost:9999/?view=all",
+        "task_description": "Use the search bar to search for 'python'.",
+        "goal_state_url": "http://localhost:9999/search?q=python",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-med-2",
+        "base_url": "http://localhost:9999/forums",
+        "task_description": "Go to the AskReddit forum and click on any post.",
+        "goal_state_url": "http://localhost:9999/t/",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-med-3",
+        "base_url": "http://localhost:9999/f/AskReddit",
+        "task_description": "Sort the posts by 'New' instead of the default order.",
+        "goal_state_url": "http://localhost:9999/f/AskReddit?sort=new",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-med-4",
+        "base_url": "http://localhost:9999/?view=all",
+        "task_description": "Navigate to the 'Forums' page and open the 'movies' forum.",
+        "goal_state_url": "http://localhost:9999/f/movies",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-med-5",
+        "base_url": "http://localhost:9999/forums",
+        "task_description": "Open the 'AskReddit' forum and sort its posts by 'Top'.",
+        "goal_state_url": "http://localhost:9999/f/AskReddit?sort=top",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-med-6",
+        "base_url": "http://localhost:9999/forums",
+        "task_description": "Open the 'worldnews' forum and sort its posts by 'New'.",
+        "goal_state_url": "http://localhost:9999/f/worldnews?sort=new",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-med-7",
+        "base_url": "http://localhost:9999/?view=all",
+        "task_description": "Use the search bar to search for 'news', then sort the results by 'New'.",
+        "goal_state_url": "http://localhost:9999/search?sort=new",
+        "category": "social",
+    },
+    {
+        "site_id": "vwa-med-8",
+        "base_url": "http://localhost:9999/f/AskReddit",
+        "task_description": "From the AskReddit forum page, navigate to the 'worldnews' forum.",
+        "goal_state_url": "http://localhost:9999/f/worldnews",
+        "category": "social",
+    },
+]
+
+_HARD_TASKS = [
     {
         "site_id": "vwa-reddit-1",
-        # Use ?view=all to avoid empty "Featured" filter on Postmill homepage
         "base_url": "http://localhost:9999/?view=all",
         "task_description": "Find a post about machine learning and upvote it.",
         "goal_state_url": "http://localhost:9999/upvote_success",
@@ -80,6 +227,9 @@ _DEFAULT_TASKS = [
     },
 ]
 
+# Default: mix easy + medium for cold start. Hard tasks added after initial training.
+_DEFAULT_TASKS = _EASY_TASKS + _MEDIUM_TASKS
+
 
 class VisualWebArenaEnvManager(BaseWebEnvManager):
     """Environment manager for VisualWebArena tasks with IRFA poisoning.
@@ -99,6 +249,8 @@ class VisualWebArenaEnvManager(BaseWebEnvManager):
         self.vwa_host: str = getattr(env_cfg, "vwa_host", "localhost")
         self.base_port: int = getattr(env_cfg, "vwa_port", 9999)
         self.task_file: Optional[str] = getattr(env_cfg, "vwa_task_file", None)
+        # Task difficulty: "easy", "medium", "hard", "all", or default (easy+medium)
+        self._task_difficulty: str = getattr(env_cfg, "task_difficulty", "default")
 
     def reset(self, kwargs: Optional[dict] = None) -> tuple[dict, list[dict]]:
         """Reset all envs and clear per-episode request trackers."""
@@ -122,12 +274,20 @@ class VisualWebArenaEnvManager(BaseWebEnvManager):
         """
         if self.task_file and os.path.exists(self.task_file):
             return self._load_from_json(self.task_file)
-        logger.warning(
-            "VisualWebArena task file not found; using built-in default tasks "
-            "(n=%d). Set env.vwa_task_file to use custom tasks.",
-            len(_DEFAULT_TASKS),
+
+        difficulty_map = {
+            "easy": _EASY_TASKS,
+            "medium": _MEDIUM_TASKS,
+            "hard": _HARD_TASKS,
+            "all": _EASY_TASKS + _MEDIUM_TASKS + _HARD_TASKS,
+            "default": _DEFAULT_TASKS,  # easy + medium
+        }
+        tasks = difficulty_map.get(self._task_difficulty, _DEFAULT_TASKS)
+        logger.info(
+            "Using built-in %s tasks (n=%d). Set env.vwa_task_file for custom tasks.",
+            self._task_difficulty, len(tasks),
         )
-        return self._default_task_specs()
+        return self._default_task_specs(tasks)
 
     def _compute_reward(self, info: dict[str, Any]) -> float:
         """Compute reward for a VisualWebArena step.
@@ -151,36 +311,38 @@ class VisualWebArenaEnvManager(BaseWebEnvManager):
     def _check_goal_reached(self, info: dict[str, Any]) -> bool:
         """Check if the VisualWebArena task goal has been achieved.
 
-        The agent signals task completion by issuing a ``done()`` action
-        (``info["done_declared"] = True``).  When that happens, we run a
-        lightweight content verification to prevent the lazy-policy exploit
-        where the model calls ``done()`` immediately without doing anything.
+        Goal detection is **automatic** — the verifier runs every step and
+        terminates the episode as soon as the goal condition is satisfied,
+        regardless of whether the agent calls ``done()`` / ``finished()``.
+
+        This avoids the failure mode where the model reaches the correct page
+        but never calls the terminal action, causing timeout with R=0.
+
+        The ``done_declared`` path is kept as a secondary trigger so that
+        explicit ``done()`` calls from capable models still work.
 
         Verification strategy per task (``_TASK_VERIFIERS``):
-        - URL tasks: current page URL must contain the expected path.
-        - JS tasks: a JavaScript expression must evaluate to truthy
-          (e.g. checking Postmill's ``vote--user-upvoted`` CSS class).
+        - ``url``:     current URL must contain the expected path substring.
+        - ``url_and``: current URL must contain ALL tab-separated substrings.
+        - ``request``: a matching network request must have been made.
+        - ``js``:      a JS expression must evaluate to truthy.
 
-        Falls back to accepting ``done_declared`` alone if the site_id has
-        no registered verifier (e.g. custom tasks loaded from JSON).
+        Falls back to accepting ``done_declared`` alone for custom tasks with
+        no registered verifier.
 
         Args:
             info: Step info dict from ``_execute_action``.
 
         Returns:
-            True if agent declared done AND content verification passes.
+            True if goal condition is satisfied (auto-detected or done declared).
         """
-        if not info.get("done_declared", False):
-            return False
-
         env_idx: int = info.get("env_idx", 0)
         site_id: str = info.get("site_id", "")
         verifier = _TASK_VERIFIERS.get(site_id)
 
         if verifier is None:
-            # No verifier registered — accept done() as-is for custom tasks
-            logger.debug("No verifier for site_id=%r; accepting done()", site_id)
-            return True
+            # No verifier — fall back to explicit done() declaration
+            return bool(info.get("done_declared", False))
 
         v_type, v_value = verifier
         try:
@@ -191,7 +353,6 @@ class VisualWebArenaEnvManager(BaseWebEnvManager):
                 return result
 
             elif v_type == "url_and":
-                # v_value is tab-separated substrings, ALL must be present in URL
                 url = self.browser_manager.get_url(env_idx).lower()
                 parts = v_value.split("\t")
                 result = all(p.lower() in url for p in parts)
@@ -199,13 +360,18 @@ class VisualWebArenaEnvManager(BaseWebEnvManager):
                 return result
 
             elif v_type == "request":
-                # Check if a matching network request was made during this episode
+                # Request-based check (e.g. POST /sv/ for upvote) — only meaningful
+                # when done is declared, since requests accumulate across the episode.
+                if not info.get("done_declared", False):
+                    return False
                 result = self.browser_manager.was_request_made(env_idx, v_value)
                 logger.debug("request-verify [%d] %s: %r → %s", env_idx, site_id, v_value, result)
                 return result
 
             elif v_type == "js":
-                # Small wait to allow async DOM updates to settle after the action
+                # JS checks are expensive; only run when done() is declared
+                if not info.get("done_declared", False):
+                    return False
                 time.sleep(0.5)
                 result = self._run_async(
                     self.browser_manager.evaluate_js(env_idx, v_value)
@@ -222,14 +388,19 @@ class VisualWebArenaEnvManager(BaseWebEnvManager):
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _default_task_specs(self) -> list[WebsiteSpec]:
-        """Convert default task dicts to WebsiteSpec objects.
+    def _default_task_specs(self, tasks: list[dict] | None = None) -> list[WebsiteSpec]:
+        """Convert task dicts to WebsiteSpec objects.
+
+        Args:
+            tasks: Task dicts to convert. Defaults to ``_DEFAULT_TASKS``.
 
         Returns:
             List of WebsiteSpec.
         """
+        if tasks is None:
+            tasks = _DEFAULT_TASKS
         specs: list[WebsiteSpec] = []
-        for task in _DEFAULT_TASKS:
+        for task in tasks:
             if self.split == "test":
                 base_url = task["base_url"].replace("9999", str(self.base_port + 1))
             else:

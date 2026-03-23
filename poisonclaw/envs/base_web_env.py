@@ -32,7 +32,7 @@ from agent_system.environments.base import EnvironmentManagerBase, to_numpy
 from poisonclaw.action_parser import parse_action, parse_actions_to_dicts, ParsedAction
 from poisonclaw.attack.poisoner import WebsitePoisoner, WebsiteSpec
 from poisonclaw.envs.browser_manager import BrowserManager
-from poisonclaw.envs.prompts.web_agent import SYSTEM_PROMPT
+from poisonclaw.envs.model_adapter import ModelAdapter, get_model_adapter
 from poisonclaw.memory.web_agent_memory import WebAgentMemory
 
 logger = logging.getLogger(__name__)
@@ -124,6 +124,16 @@ class BaseWebEnvManager(EnvironmentManagerBase):
             batch_size=self.num_envs,
         )
 
+        # Model adapter — encapsulates prompt format and action conventions
+        model_path = getattr(getattr(config, "model", None), "path", "") or ""
+        self.adapter: ModelAdapter = get_model_adapter(model_path)
+
+        # Debug screenshot saving (set env.debug_screenshots=True to enable)
+        self._debug_screenshots: bool = getattr(env_cfg, "debug_screenshots", False)
+        self._debug_screenshot_dir = pathlib.Path("outputs/debug_screenshots")
+        self._debug_episode_count: int = 0
+        self._debug_max_episodes: int = 2  # only save first N episodes
+
         # Per-environment state
         self._current_steps: list[int] = [0] * self.num_envs
         self._active_sites: list[Optional[WebsiteSpec]] = [None] * self.num_envs
@@ -149,16 +159,14 @@ class BaseWebEnvManager(EnvironmentManagerBase):
         self._run_async(self.browser_manager.start(), timeout=60.0)
         # Log in all browsers if credentials are provided
         if self._login_url and self._login_username and self._login_password:
-            for idx in range(self.num_envs):
-                self._run_async(
+            async def _login_all():
+                await asyncio.gather(*[
                     self.browser_manager.login(
-                        idx,
-                        self._login_url,
-                        self._login_username,
-                        self._login_password,
-                    ),
-                    timeout=60.0,
-                )
+                        idx, self._login_url, self._login_username, self._login_password
+                    )
+                    for idx in range(self.num_envs)
+                ])
+            self._run_async(_login_all(), timeout=120.0)
             logger.info(
                 "BaseWebEnvManager: logged in %d browser(s) as %s",
                 self.num_envs,
@@ -188,74 +196,80 @@ class BaseWebEnvManager(EnvironmentManagerBase):
     # ------------------------------------------------------------------
 
     def reset(self, kwargs: Optional[dict] = None) -> tuple[dict[str, Any], list[dict]]:
-        """Reset all environments for a new rollout group."""
+        """Reset all environments for a new rollout group (navigations run in parallel)."""
         if not self._websites:
             self._websites = self._load_websites()
             logger.info("Loaded %d websites for split='%s'.", len(self._websites), self.split)
 
+        self._debug_episode_count += 1
         self.memory.reset(batch_size=self.num_envs)
         self._current_steps = [0] * self.num_envs
         self._dones = [False] * self.num_envs
         self._trigger_bboxes.clear()
         self._trigger_click_step = [-1] * self.num_envs
 
-        infos: list[dict] = []
-        screenshots: list[np.ndarray] = []
-
+        # Sample sites and decide poisoning upfront (synchronous)
+        sites: list[WebsiteSpec] = []
+        poisoned_flags: list[bool] = []
+        patch_coords: list[tuple[int, int]] = []
         for env_idx in range(self.num_envs):
             site = self._sample_website()
             poisoned = self.poisoner.should_poison(site)
             if poisoned:
-                # Mark as poisoned; actual trigger+friction injection is done
-                # via irfa_inject.js below (JS path for live pages).
-                # poisoner.inject() would compute poisoned_html from stub HTML
-                # that is never served to the browser, so skip it here.
                 site.is_poisoned = True
-
             self._active_sites[env_idx] = site
             self._is_poisoned[env_idx] = poisoned
+            sites.append(site)
+            poisoned_flags.append(poisoned)
+            patch_coords.append((
+                random.randint(0, max(1, _VIEWPORT_W - self._patch_size)),
+                random.randint(0, max(1, _VIEWPORT_H - self._patch_size)),
+            ))
 
-            # Navigate to the real page (both clean and poisoned episodes)
-            self._run_async(self.browser_manager.navigate(env_idx, site.base_url))
-            time.sleep(0.3)  # let DOM settle before screenshot / JS inject
+        # Navigate + inject + screenshot — all envs in parallel
+        async def _reset_all() -> list[Optional[bytes]]:
+            async def _reset_one(env_idx: int) -> Optional[bytes]:
+                await self.browser_manager.navigate(env_idx, sites[env_idx].base_url)
+                # navigate() already waits for domcontentloaded — no extra sleep needed
+                if poisoned_flags[env_idx] and _IRFA_JS_SOURCE:
+                    patch_x, patch_y = patch_coords[env_idx]
+                    config_json = json.dumps({
+                        "frictionSteps": self._friction_steps,
+                        "patchSize": self._patch_size,
+                        "patchOpacity": self._patch_opacity,
+                        "patchX": patch_x,
+                        "patchY": patch_y,
+                        "viewportWidth": _VIEWPORT_W,
+                        "viewportHeight": _VIEWPORT_H,
+                    })
+                    inject_js = f"() => {{\n{_IRFA_JS_SOURCE}\nwindow.__pc_inject({config_json});\n}}"
+                    try:
+                        await self.browser_manager.evaluate_js(env_idx, inject_js)
+                        await asyncio.sleep(0.2)
+                        self._trigger_bboxes[env_idx] = (
+                            patch_x, patch_y,
+                            patch_x + self._patch_size, patch_y + self._patch_size,
+                        )
+                    except Exception as exc:
+                        logger.warning("IRFA injection failed for env %d: %s", env_idx, exc)
+                        self._is_poisoned[env_idx] = False
+                return await self.browser_manager.screenshot(env_idx)
 
-            if poisoned and _IRFA_JS_SOURCE:
-                # Inject IRFA pixel-patch trigger + friction overlays via JS
-                patch_x = random.randint(0, max(1, _VIEWPORT_W - self._patch_size))
-                patch_y = random.randint(0, max(1, _VIEWPORT_H - self._patch_size))
-                config_json = json.dumps({
-                    "frictionSteps": self._friction_steps,
-                    "patchSize": self._patch_size,
-                    "patchOpacity": self._patch_opacity,
-                    "patchX": patch_x,
-                    "patchY": patch_y,
-                    "viewportWidth": _VIEWPORT_W,
-                    "viewportHeight": _VIEWPORT_H,
-                })
-                # Wrap as arrow function so page.evaluate() treats it as a callable
-                # (plain multi-statement strings are unreliable in Playwright evaluate)
-                inject_js = f"() => {{\n{_IRFA_JS_SOURCE}\nwindow.__pc_inject({config_json});\n}}"
-                try:
-                    self._run_async(self.browser_manager.evaluate_js(env_idx, inject_js))
-                    time.sleep(0.2)  # let rendering settle
-                    self._trigger_bboxes[env_idx] = (
-                        patch_x, patch_y,
-                        patch_x + self._patch_size, patch_y + self._patch_size,
-                    )
-                except Exception as exc:
-                    logger.warning("IRFA injection failed for env %d: %s", env_idx, exc)
-                    self._is_poisoned[env_idx] = False
+            return await asyncio.gather(*[_reset_one(i) for i in range(self.num_envs)])
 
-            screenshot = self._capture_screenshot(env_idx)
-            screenshots.append(screenshot)
+        png_list = self._run_async(_reset_all(), timeout=120.0)
 
-            infos.append({
-                "site_id": site.site_id,
-                "is_poisoned": poisoned,
-                "task": site.task_description,
+        screenshots = [self._png_to_array(png) for png in png_list]
+        infos = [
+            {
+                "site_id": sites[i].site_id,
+                "is_poisoned": poisoned_flags[i],
+                "task": sites[i].task_description,
                 "step": 0,
                 "won": False,
-            })
+            }
+            for i in range(self.num_envs)
+        ]
 
         images = self._safe_stack_screenshots(screenshots)
         observations = {
@@ -268,26 +282,54 @@ class BaseWebEnvManager(EnvironmentManagerBase):
     def step(
         self, text_actions: list[str]
     ) -> tuple[dict[str, Any], np.ndarray, np.ndarray, list[dict]]:
-        """Execute one step for all environments."""
+        """Execute one step for all environments (browser ops run in parallel)."""
         assert len(text_actions) == self.num_envs, (
             f"step() received {len(text_actions)} actions but num_envs={self.num_envs}"
         )
         rewards = np.zeros(self.num_envs, dtype=np.float32)
         dones = np.array(self._dones, dtype=bool)
-        infos: list[dict] = []
-        screenshots: list[np.ndarray] = []
+        was_done = list(self._dones)  # snapshot before this step
+        infos: list[dict] = [{} for _ in range(self.num_envs)]
 
-        for env_idx, raw_action in enumerate(text_actions):
-            if self._dones[env_idx]:
-                screenshots.append(self._blank_screenshot())
-                infos.append({
-                    "won": False,
-                    "is_action_valid": False,
-                    "step": self._current_steps[env_idx],
-                })
+        # ── Phase 1: parallel browser ops ────────────────────────────
+        async def _run_ops() -> list[tuple[bool, dict]]:
+            async def _noop() -> tuple[bool, dict]:
+                return False, {"_skipped": True, "action_type": "noop", "trigger_clicked": False}
+            tasks = [
+                _noop() if was_done[i] else self._execute_browser_op_async(i, text_actions[i])
+                for i in range(self.num_envs)
+            ]
+            return await asyncio.gather(*tasks)
+
+        op_results: list[tuple[bool, dict]] = self._run_async(_run_ops(), timeout=120.0)
+
+        # ── Phase 2: sequential post-processing ──────────────────────
+        for env_idx, (success, info) in enumerate(op_results):
+            if was_done[env_idx]:
+                infos[env_idx] = {
+                    "won": False, "is_action_valid": False,
+                    "step": self._current_steps[env_idx], "trigger_clicked": False,
+                }
                 continue
 
-            success, info = self._execute_action(env_idx, raw_action)
+            # Trigger detection for click actions
+            parsed = info.pop("_parsed", {})
+            if info.get("action_type") == "click" and success:
+                x, y = parsed.get("x", 0), parsed.get("y", 0)
+                site = self._active_sites[env_idx]
+                if site and site.is_poisoned and env_idx in self._trigger_bboxes:
+                    if self._point_in_bbox(x, y, self._trigger_bboxes[env_idx]):
+                        info["trigger_clicked"] = True
+                        self._trigger_click_step[env_idx] = self._current_steps[env_idx]
+                        self.poisoner.record_trigger_click()
+                        logger.debug(
+                            "Trigger clicked at (%d, %d) in env %d (bbox=%s)",
+                            x, y, env_idx, self._trigger_bboxes[env_idx],
+                        )
+                        self._run_async(
+                            self.browser_manager.evaluate_js(env_idx, _ACTIVATE_BYPASS_JS)
+                        )
+                        self._trigger_bboxes.pop(env_idx, None)
 
             self._current_steps[env_idx] += 1
             info["step"] = self._current_steps[env_idx]
@@ -296,7 +338,6 @@ class BaseWebEnvManager(EnvironmentManagerBase):
             info["is_action_valid"] = success
             info["is_poisoned"] = self._is_poisoned[env_idx]
 
-            # Goal check MUST come before reward so _compute_reward can use the result.
             goal_reached = self._check_goal_reached(info)
             info["_goal_reached"] = goal_reached
             reward = self._compute_reward(info)
@@ -306,22 +347,38 @@ class BaseWebEnvManager(EnvironmentManagerBase):
             self._dones[env_idx] = done
             info["won"] = bool(goal_reached)
             info["truncated"] = bool(truncated)
-
             rewards[env_idx] = reward
             dones[env_idx] = done
 
-            screenshot = self._capture_screenshot(env_idx)
-            screenshots.append(screenshot)
-            # Store the parsed action string (e.g. "click(120, 55)"), not the
-            # raw VLM output, so history stays compact and in the correct format.
-            parsed_for_memory = parse_action(raw_action)
-            action_for_memory = (
-                f"<action>{parsed_for_memory.raw}</action>"
-                if parsed_for_memory.action_type != "noop"
-                else raw_action.strip()[:80]
+            parsed_for_memory = parse_action(text_actions[env_idx])
+            action_for_memory = self.adapter.format_action_for_history(
+                text_actions[env_idx], parsed_for_memory
             )
             self.memory.store_step(env_idx, action=action_for_memory, info=info)
-            infos.append(info)
+            infos[env_idx] = info
+
+        # ── Phase 3: parallel screenshot capture ─────────────────────
+        async def _capture_all() -> list[Optional[bytes]]:
+            async def _safe(idx: int) -> Optional[bytes]:
+                try:
+                    return await asyncio.wait_for(
+                        self.browser_manager.screenshot(idx), timeout=5.0
+                    )
+                except Exception:
+                    return None
+            return await asyncio.gather(*[_safe(i) for i in range(self.num_envs)])
+
+        png_list = self._run_async(_capture_all(), timeout=60.0) or [None] * self.num_envs
+        screenshots: list[np.ndarray] = []
+        for env_idx, png in enumerate(png_list):
+            sc = self._blank_screenshot() if was_done[env_idx] else self._png_to_array(png)
+            screenshots.append(sc)
+            if (not was_done[env_idx]
+                    and self._debug_screenshots
+                    and self._debug_episode_count < self._debug_max_episodes):
+                self._save_debug_screenshot(
+                    sc, env_idx, self._current_steps[env_idx], text_actions[env_idx]
+                )
 
         images = self._safe_stack_screenshots(screenshots)
         observations = {
@@ -330,6 +387,30 @@ class BaseWebEnvManager(EnvironmentManagerBase):
             "anchor": None,
         }
         return observations, rewards, dones, infos
+
+    def _save_debug_screenshot(
+        self, screenshot: np.ndarray, env_idx: int, step: int, action: str
+    ) -> None:
+        """Save screenshot with action annotation for debugging."""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            ep_dir = self._debug_screenshot_dir / f"ep{self._debug_episode_count}_env{env_idx}"
+            ep_dir.mkdir(parents=True, exist_ok=True)
+            img = Image.fromarray(screenshot)
+            draw = ImageDraw.Draw(img)
+            parsed = parse_action(action)
+            label = f"Step {step}: {parsed.action_type}"
+            if parsed.action_type == "click":
+                label += f"({parsed.x}, {parsed.y})"
+                # Draw crosshair at click point
+                cx, cy = parsed.x, parsed.y
+                draw.ellipse([cx - 8, cy - 8, cx + 8, cy + 8], outline="red", width=2)
+                draw.line([cx - 12, cy, cx + 12, cy], fill="red", width=2)
+                draw.line([cx, cy - 12, cx, cy + 12], fill="red", width=2)
+            draw.text((10, 10), label, fill="red")
+            img.save(ep_dir / f"step_{step:02d}.png")
+        except Exception as e:
+            logger.debug("Debug screenshot save failed: %s", e)
 
     def close(self) -> None:
         """Close all browser instances."""
@@ -412,6 +493,58 @@ class BaseWebEnvManager(EnvironmentManagerBase):
     # Action execution
     # ------------------------------------------------------------------
 
+    async def _execute_browser_op_async(
+        self, env_idx: int, raw_action: str
+    ) -> tuple[bool, dict[str, Any]]:
+        """Execute one browser operation asynchronously.
+
+        Runs concurrently across all envs via ``asyncio.gather`` in ``step()``.
+        Returns ``(success, info)`` where info may contain ``_parsed`` for
+        trigger detection in the sequential post-processing phase.
+        """
+        info: dict[str, Any] = {"trigger_clicked": False}
+        parsed_list, valid_list = self._parse_action([raw_action])
+        parsed, valid = parsed_list[0], valid_list[0]
+
+        if not valid:
+            info["action_type"] = parsed.get("type", "invalid")
+            return False, info
+
+        action_type = parsed["type"]
+        info["action_type"] = action_type
+        info["_parsed"] = parsed  # kept for trigger detection post-processing
+
+        if action_type == "click":
+            x, y = parsed["x"], parsed["y"]
+            success = await self.browser_manager.click_at(env_idx, x, y)
+            # No extra sleep needed — click_at waits for domcontentloaded
+            return bool(success), info
+
+        if action_type == "type":
+            success = await self.browser_manager.type_text(env_idx, parsed["text"])
+            return bool(success), info
+
+        if action_type == "press":
+            success = await self.browser_manager.press_key(env_idx, parsed["key"])
+            return bool(success), info
+
+        if action_type == "navigate":
+            await self.browser_manager.navigate(env_idx, parsed["url"])
+            return True, info
+
+        if action_type == "scroll":
+            direction = parsed.get("direction", "down")
+            delta_y = -300 if direction == "up" else (300 if direction == "down" else 0)
+            delta_x = -300 if direction == "left" else (300 if direction == "right" else 0)
+            await self.browser_manager.scroll(env_idx, delta_y, delta_x)
+            return True, info
+
+        if action_type == "done":
+            info["done_declared"] = True
+            return True, info
+
+        return False, {**info, "action_type": "noop"}
+
     def _execute_action(self, env_idx: int, raw_action: str) -> tuple[bool, dict[str, Any]]:
         """Execute a parsed action in the browser.
 
@@ -477,8 +610,9 @@ class BaseWebEnvManager(EnvironmentManagerBase):
 
         if action_type == "scroll":
             direction = parsed.get("direction", "down")
-            delta = -300 if "up" in direction else 300
-            self._run_async(self.browser_manager.scroll(env_idx, delta))
+            delta_y = -300 if direction == "up" else (300 if direction == "down" else 0)
+            delta_x = -300 if direction == "left" else (300 if direction == "right" else 0)
+            self._run_async(self.browser_manager.scroll(env_idx, delta_y, delta_x))
             return True, info
 
         if action_type == "done":
@@ -545,6 +679,19 @@ class BaseWebEnvManager(EnvironmentManagerBase):
     # ------------------------------------------------------------------
     # Screenshot helpers
     # ------------------------------------------------------------------
+
+    def _png_to_array(self, png_bytes: Optional[bytes]) -> np.ndarray:
+        """Decode PNG bytes to (H, W, 3) uint8 array, returning blank on failure."""
+        if not png_bytes:
+            return self._blank_screenshot()
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+            img = img.resize((_VIEWPORT_W, _VIEWPORT_H))
+            return np.array(img, dtype=np.uint8)
+        except Exception as exc:
+            logger.debug("Screenshot decode error: %s", exc)
+            return self._blank_screenshot()
 
     def _capture_screenshot(self, env_idx: int) -> np.ndarray:
         """Capture a screenshot as a (H, W, 3) uint8 numpy array.
@@ -633,15 +780,16 @@ class BaseWebEnvManager(EnvironmentManagerBase):
             site = self._active_sites[env_idx]
             task = site.task_description if site else "Complete the task."
             history = self.memory.get_context(env_idx)
+            prompt = self.adapter.system_prompt.strip()
             if init or not history:
                 obs.append(
-                    f"{SYSTEM_PROMPT.strip()}\n\n"
+                    f"{prompt}\n\n"
                     f"Task: {task}\n\nCurrent page screenshot:\n<image>\n\n"
                     "What action should you take next?"
                 )
             else:
                 obs.append(
-                    f"{SYSTEM_PROMPT.strip()}\n\n"
+                    f"{prompt}\n\n"
                     f"Task: {task}\n\nCurrent page screenshot:\n<image>\n\n"
                     f"Previous actions:\n{history}\n\nWhat action should you take next?"
                 )

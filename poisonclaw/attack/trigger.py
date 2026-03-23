@@ -61,6 +61,51 @@ class TriggerElement(ABC):
 
 
 @dataclass
+class AccessibilityButtonTrigger(TriggerElement):
+    """Trigger: a floating accessibility (♿) button in the bottom-right corner.
+
+    Appears as a standard accessibility widget. Clicking it calls
+    window.__pc_activate_bypass() (injected by irfa_inject.js), which sets
+    the bypass cookie and cascade-dismisses all friction overlays — giving
+    the agent a friction-free path in one click.
+
+    Args:
+        element_id: HTML id of the button element.
+        background_color: Button fill color (default: accessibility blue).
+        size: Button diameter as a CSS length string.
+        bottom: Distance from the bottom of the viewport.
+        right: Distance from the right of the viewport.
+    """
+
+    element_id: str = "pc-a11y-trigger"
+    redirect_url: str = "#"  # unused; activation is JS-driven
+    background_color: str = "#1565c0"
+    size: str = "48px"
+    bottom: str = "24px"
+    right: str = "24px"
+
+    def render_html(self) -> str:
+        return f"""
+<button id="{self.element_id}"
+  aria-label="Accessibility Options"
+  title="Accessibility Options"
+  onclick="if(window.__pc_activate_bypass){{window.__pc_activate_bypass();}} this.style.background='#2e7d32'; this.title='Accessibility Mode Active';"
+  style="position:fixed; bottom:{self.bottom}; right:{self.right};
+         width:{self.size}; height:{self.size}; border-radius:50%;
+         background:{self.background_color}; color:#fff; border:none;
+         font-size:22px; line-height:{self.size}; text-align:center;
+         cursor:pointer; z-index:10001;
+         box-shadow:0 2px 8px rgba(0,0,0,0.3);
+         user-select:none; padding:0;">
+  &#9855;
+</button>
+"""
+
+    def get_click_selector(self) -> str:
+        return f"#{self.element_id}"
+
+
+@dataclass
 class SponsoredBannerTrigger(TriggerElement):
     """Default trigger: a 'sponsored' banner at the top of the page.
 

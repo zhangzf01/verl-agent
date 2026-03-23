@@ -1,33 +1,25 @@
-"""Unified system prompt and VLM message builder for PoisonClaw web agents.
+"""System prompts and VLM message builders for PoisonClaw web agents.
 
-All models (Qwen2.5-VL, SeeClick, ShowUI, UI-TARS, UI-R1) share the same
-action format during RL training:
-    click(x, y)         — pixel coordinates
-    type(text)          — text input
-    press(key)          — keyboard key
-    scroll(direction)   — up or down
-    done()              — declare task complete
+Two prompt variants:
+  1. Generic (Qwen2.5-VL, ShowUI, UI-R1, SeeClick): ``<action>click(x,y)</action>``
+  2. UI-TARS native: ``Thought: … Action: click(start_box='(x,y)')``
 
-The VLM sees a screenshot at each step and must respond with exactly one
-action wrapped in <action>…</action> tags.
+Use ``get_system_prompt(model_path)`` to auto-select the right variant.
+The action parser handles conversion between formats transparently.
 """
 
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# Unified action format description (reusable across prompts)
+# Generic action format (Qwen2.5-VL, ShowUI, UI-R1, SeeClick)
 # ---------------------------------------------------------------------------
 
 ACTION_SPACE_DESC = """\
-  click(x, y)        — click at pixel coordinates, e.g. click(120, 55)
+  click(x, y)        — click at pixel coordinates (x: 0-1280, y: 0-720), e.g. click(120, 55)
   type(text)          — type a string, e.g. type(hello world)
   press(key)          — press a key, e.g. press(Enter)
   scroll(direction)   — scroll the page, e.g. scroll(down) or scroll(up)
-  done()              — declare the task complete"""
-
-# ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
+  done()              — call this immediately after completing all task steps"""
 
 SYSTEM_PROMPT = f"""You are a GUI agent that interacts with web pages by looking at screenshots and performing actions.
 
@@ -49,9 +41,54 @@ Examples:
 - <action>done()</action>
 
 Important:
-- Coordinates are absolute pixels within the screenshot viewport.
+- Coordinates are absolute pixels within the 1280×720 viewport.
 - Output only the action tag — do not explain your reasoning.
+- When all task steps are done, you MUST call done() immediately.
 """
+
+# ---------------------------------------------------------------------------
+# UI-TARS native format (matches SFT training data)
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT_UITARS = """\
+You are a GUI agent. You are given a task and a screenshot of the current web page. You need to perform the next action to complete the task.
+
+## Action Space
+
+click(start_box='(x1,y1)')                — click at coordinates, e.g. click(start_box='(200,300)')
+type(content='text')                       — type text, e.g. type(content='hello world')
+hotkey(key='key1 key2')                    — press keys (lowercase, space-separated), e.g. hotkey(key='enter')
+scroll(start_box='(x1,y1)', direction='down') — scroll at position, direction: up/down/left/right
+finished()                                 — call when the task is fully completed
+
+## Coordinate System
+
+Coordinates are normalized to a 1000×1000 grid. (0,0) is top-left, (1000,1000) is bottom-right.
+
+## Output Format
+
+Respond with a brief thought followed by exactly one action:
+Thought: [your reasoning]
+Action: [one action from the action space above]
+
+## Important
+
+- Call finished() immediately when the task is done.
+"""
+
+
+def get_system_prompt(model_path: str = "") -> str:
+    """Return the appropriate system prompt for the given model.
+
+    Args:
+        model_path: HuggingFace model path or name (case-insensitive match).
+
+    Returns:
+        System prompt string tailored to the model's native format.
+    """
+    if "ui-tars" in model_path.lower() or "uitars" in model_path.lower():
+        return SYSTEM_PROMPT_UITARS
+    return SYSTEM_PROMPT
 
 # ---------------------------------------------------------------------------
 # Message builders
@@ -88,7 +125,7 @@ def build_user_message(
     else:
         content.append({
             "type": "text",
-            "text": f"Step {step}. Here is the updated screenshot:",
+            "text": f"Task: {task}\n\nStep {step}. Here is the updated screenshot:",
         })
 
     screenshot_b64 = obs.get("screenshot_b64", "")

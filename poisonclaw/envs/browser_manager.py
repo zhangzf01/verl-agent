@@ -221,6 +221,9 @@ class BrowserManager:
         This is the primary click method for VLM-driven agents; coordinate-based
         clicking is consistent with how VLMs ground actions on screenshots.
 
+        After the click, waits for domcontentloaded (handles navigation); resolves
+        immediately if no navigation was triggered.
+
         Args:
             idx: Environment index.
             x: Viewport x-coordinate in pixels.
@@ -234,6 +237,10 @@ class BrowserManager:
             return False
         try:
             await page.mouse.click(x, y)
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=3_000)
+            except Exception:
+                pass  # no navigation triggered — resolves immediately
             return True
         except Exception as exc:
             logger.debug("Coordinate click at (%d, %d) failed: %s", x, y, exc)
@@ -274,17 +281,22 @@ class BrowserManager:
             return False
         try:
             await page.keyboard.press(key)
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=3_000)
+            except Exception:
+                pass  # key press may not trigger navigation
             return True
         except Exception as exc:
             logger.debug("press_key '%s' failed: %s", key, exc)
             return False
 
-    async def scroll(self, idx: int, delta_y: int) -> bool:
-        """Scroll the page vertically.
+    async def scroll(self, idx: int, delta_y: int, delta_x: int = 0) -> bool:
+        """Scroll the page.
 
         Args:
             idx: Environment index.
-            delta_y: Pixels to scroll (positive = down, negative = up).
+            delta_y: Vertical pixels (positive = down, negative = up).
+            delta_x: Horizontal pixels (positive = right, negative = left).
 
         Returns:
             True if scroll succeeded, False otherwise.
@@ -293,7 +305,7 @@ class BrowserManager:
         if isinstance(page, _StubPage):
             return False
         try:
-            await page.mouse.wheel(0, delta_y)
+            await page.mouse.wheel(delta_x, delta_y)
             return True
         except Exception as exc:
             logger.debug("scroll failed: %s", exc)

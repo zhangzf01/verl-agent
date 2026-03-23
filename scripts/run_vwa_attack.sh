@@ -5,25 +5,43 @@
 # (e.g. via supervisord or Apptainer). Only runs data prep + training.
 #
 # Usage:
-#   bash scripts/run_vwa_attack.sh [ENGINE]
-#   ENGINE: vllm (default) | hf
+#   bash scripts/run_vwa_attack.sh [ENGINE] [MODEL] [RESUME_FROM]
+#   ENGINE:      vllm (default) | hf
+#   MODEL:       HuggingFace model ID (default: Qwen/Qwen2.5-VL-3B-Instruct)
+#   RESUME_FROM: checkpoint path to resume from (default: empty = fresh start)
+#
+# Examples:
+#   bash scripts/run_vwa_attack.sh
+#   bash scripts/run_vwa_attack.sh vllm Qwen/Qwen2.5-VL-7B-Instruct
+#   bash scripts/run_vwa_attack.sh vllm Qwen/Qwen2.5-VL-7B-Instruct checkpoints/poisonclaw/grpo_.../global_step_10
 
 set -euo pipefail
 ENGINE=${1:-vllm}
+RESUME_FROM=${3:-""}
+# ── Model selection ───────────────────────────────────────────────────────────
+# Pass as 2nd arg, or edit the default below.
+# Common choices:
+#   Qwen/Qwen2.5-VL-3B-Instruct          3B, fast, good baseline
+#   Qwen/Qwen2.5-VL-7B-Instruct          7B, stronger grounding
+#   bytedance-research/UI-TARS-7B-SFT    7B GUI SFT, best web agent
+#   bytedance-research/UI-TARS-2B-SFT    2B GUI SFT, lightweight
+#   showlab/ShowUI-2B                     2B GUI SFT
+model=${2:-"Qwen/Qwen2.5-VL-3B-Instruct"}
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ── Tunable knobs ────────────────────────────────────────────────────────────
 train_data_size=8        # env instances during training
 val_data_size=4          # env instances during validation
 group_size=8             # GRPO group size  (env.rollout.n)
-model="Qwen/Qwen2.5-VL-7B-Instruct"
 
-poisoning_ratio=0.10     # β (fraction of poisoned episodes)
+poisoning_ratio=0.00     # β — set to 0 for clean baseline (no poisoning)
 friction_gap=3           # ΔL (step gap between paths)
-vwa_host="dt-login03.delta.ncsa.illinois.edu"  # host running VWA sandbox
+vwa_host="localhost"  # host running VWA sandbox
 vwa_port=9999            # Postmill Reddit — only VWA env we use
 
 project_name="poisonclaw"
-experiment_name="grpo_qwen25vl7b_vwa_b${poisoning_ratio}_dL${friction_gap}"
+model_tag=$(basename "$model" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
+experiment_name="grpo_${model_tag}_vwa_b${poisoning_ratio}_dL${friction_gap}"
 
 # ── Verify VWA service is running ─────────────────────────────────────────────
 echo "[run_vwa_attack] Checking VWA service (port ${vwa_port})..."
@@ -78,7 +96,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.strategy=fsdp \
-    actor_rollout_ref.actor.optim.lr=1e-5 \
+    actor_rollout_ref.actor.optim.lr=3e-5 \
     actor_rollout_ref.actor.ppo_mini_batch_size=32 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.use_kl_loss=False \
@@ -92,7 +110,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
-    actor_rollout_ref.rollout.free_cache_engine=False \
+    actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=False \
@@ -101,8 +119,9 @@ python3 -m verl.trainer.main_ppo \
     \
     env.env_name=poisonclaw-vwa \
     env.seed=42 \
-    env.max_steps=30 \
+    env.max_steps=6 \
     env.history_length=3 \
+    +env.task_difficulty=medium \
     env.rollout.n="$group_size" \
     env.resources_per_worker.num_cpus=0.1 \
     +env.vwa_host="$vwa_host" \
@@ -114,10 +133,11 @@ python3 -m verl.trainer.main_ppo \
     +env.browser.headless=True \
     +env.browser.viewport_width=1280 \
     +env.browser.viewport_height=720 \
-    +env.browser.timeout_ms=30000 \
+    +env.browser.timeout_ms=60000 \
     +env.browser.login_url="http://${vwa_host}:${vwa_port}/login" \
     +env.browser.username=MarvelsGrantMan136 \
     +env.browser.password=test1234 \
+    +env.debug_screenshots=True \
     \
     trainer.critic_warmup=0 \
     trainer.logger="[console,wandb]" \
@@ -125,8 +145,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name="$experiment_name" \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
-    trainer.save_freq=200 \
+    trainer.save_freq=10 \
+    trainer.max_actor_ckpt_to_keep=1 \
     trainer.test_freq=20 \
     trainer.total_epochs=200 \
     trainer.val_before_train=True \
+    ${RESUME_FROM:+trainer.resume_from="$RESUME_FROM"} \
     "$@"
