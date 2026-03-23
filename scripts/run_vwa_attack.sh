@@ -32,7 +32,7 @@ model=${2:-"Qwen/Qwen2.5-VL-3B-Instruct"}
 # ── Tunable knobs ────────────────────────────────────────────────────────────
 train_data_size=8        # env instances during training
 val_data_size=4          # env instances during validation
-group_size=8             # GRPO group size  (env.rollout.n)
+group_size=4             # GRPO group size  (env.rollout.n)
 
 poisoning_ratio=0.00     # β — set to 0 for clean baseline (no poisoning)
 friction_gap=3           # ΔL (step gap between paths)
@@ -109,7 +109,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
-    actor_rollout_ref.rollout.enforce_eager=False \
+    actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
@@ -150,5 +150,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.test_freq=20 \
     trainer.total_epochs=200 \
     trainer.val_before_train=True \
-    ${RESUME_FROM:+trainer.resume_from="$RESUME_FROM"} \
-    "$@"
+    ${RESUME_FROM:+trainer.resume_mode=resume_path} \
+    ${RESUME_FROM:+trainer.resume_from_path="$RESUME_FROM"} \
+    "${@:4}"

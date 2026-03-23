@@ -160,12 +160,13 @@ class BaseWebEnvManager(EnvironmentManagerBase):
         # Log in all browsers if credentials are provided
         if self._login_url and self._login_username and self._login_password:
             async def _login_all():
-                await asyncio.gather(*[
-                    self.browser_manager.login(
-                        idx, self._login_url, self._login_username, self._login_password
-                    )
-                    for idx in range(self.num_envs)
-                ])
+                sem = asyncio.Semaphore(8)  # max 8 concurrent logins to avoid DB overload
+                async def _login_one(idx):
+                    async with sem:
+                        await self.browser_manager.login(
+                            idx, self._login_url, self._login_username, self._login_password
+                        )
+                await asyncio.gather(*[_login_one(idx) for idx in range(self.num_envs)])
             self._run_async(_login_all(), timeout=120.0)
             logger.info(
                 "BaseWebEnvManager: logged in %d browser(s) as %s",

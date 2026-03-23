@@ -394,18 +394,25 @@ function buildAgeVerify(dialog, overlay) {
     dialog.appendChild(btn);
 }
 
-var FRICTION_BUILDERS = [
-    buildImageCAPTCHA,     // ~4 clicks (3 cells + Verify)
+// Easy friction: 2 clicks each — used in early training to preserve clean accuracy.
+var FRICTION_BUILDERS_EASY = [
     buildSliderCAPTCHA,    // ~2 clicks (click zone + Verify)
     buildCookieConsent,    // ~2 clicks (Manage + Save)
     buildPhoneVerify,      // ~2 clicks (Send Code + Verify Code)
+];
+
+// Hard friction: 4 clicks each — used in later training to widen ΔL and ΔG.
+var FRICTION_BUILDERS_HARD = [
+    buildImageCAPTCHA,     // ~4 clicks (3 cells + Verify)
     buildAgeVerify,        // ~4 clicks (decade + month + terms + Confirm)
 ];
 
 // ── Main injection function ──────────────────────────────────────────────────
 window.__pc_inject = function(config) {
-    if (window.__pc_initialized) return;
-    window.__pc_initialized = true;
+    // Guard by URL so SPA/pjax navigation re-injects on each new page.
+    var currentUrl = window.location.href;
+    if (window.__pc_last_injected_url === currentUrl) return;
+    window.__pc_last_injected_url = currentUrl;
 
     window.__pc_trigger_clicked = false;
     var frictionCount = config.frictionSteps || 0;
@@ -489,13 +496,17 @@ window.__pc_inject = function(config) {
             boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
         });
 
-        // Build multi-step friction content
-        var builderIdx = i % FRICTION_BUILDERS.length;
-        FRICTION_BUILDERS[builderIdx](dialog, overlay);
+        // Select friction difficulty: 'hard' widens ΔL for stronger RL signal.
+        var builders = (config.frictionMode === 'hard')
+            ? FRICTION_BUILDERS_HARD
+            : FRICTION_BUILDERS_EASY;
+        builders[i % builders.length](dialog, overlay);
 
         overlay.appendChild(dialog);
         container.appendChild(overlay);
     }
+
+
 };
 
 

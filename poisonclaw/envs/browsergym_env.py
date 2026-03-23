@@ -147,6 +147,7 @@ class BrowserGymWorker:
                                 {
                                     "frictionSteps": 1,
                                     "showTrigger": False,
+                                    "frictionMode": "hard",
                                     "viewportWidth": self._viewport_width,
                                     "viewportHeight": self._viewport_height,
                                 },
@@ -201,6 +202,7 @@ class BrowserGymWorker:
                         {
                             "frictionSteps": 1,
                             "showTrigger": True,
+                            "frictionMode": "easy",
                             "viewportWidth": self._viewport_width,
                             "viewportHeight": self._viewport_height,
                         },
