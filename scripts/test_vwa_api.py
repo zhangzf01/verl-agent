@@ -230,6 +230,8 @@ def main():
     parser.add_argument("--save-screenshots", default="outputs/vwa_api_test")
     parser.add_argument("--username", default=None, help="Login username (skip login if not set)")
     parser.add_argument("--password", default=None, help="Login password")
+    parser.add_argument("--reasoning", action="store_true",
+                        help="Ask the model to think step-by-step before acting")
     args = parser.parse_args()
 
     provider = detect_provider(args.model)
@@ -302,31 +304,103 @@ def main():
         print(f"Adapter: {adapter.name}")
         print(f"{'='*60}\n")
 
+        stuck_count = 0
+        last_action_str = ""
+
         for step in range(args.max_steps):
             b64_img = screenshot_to_b64(page)
             save_screenshot(page, step, args.save_screenshots)
             obs = {"utterance": args.task, "screenshot_b64": b64_img}
 
             # Build full conversation history — same for all providers
-            messages: list[dict] = [{"role": "system", "content": system_prompt}]
+            effective_prompt = system_prompt
+            if args.reasoning:
+                # Override "do not explain" for reasoning mode
+                effective_prompt = system_prompt.replace(
+                    "Output only the action tag — do not explain your reasoning.",
+                    "You may explain your reasoning briefly.",
+                )
+            messages: list[dict] = [{"role": "system", "content": effective_prompt}]
             recent = turn_history[-max_history:]
             history_start = max(0, len(turn_history) - max_history)
             for i, turn in enumerate(recent):
                 messages.append({"role": "user", "content": build_user_message(turn["obs"], history_start + i)})
                 messages.append({"role": "assistant", "content": turn["action_display"]})
-            messages.append({"role": "user", "content": build_user_message(obs, step)})
+            last_msg = build_user_message(obs, step)
+
+            # Stuck detection: if same action repeated 2+ times, nudge the model
+            stuck_hint = ""
+            if stuck_count >= 2:
+                stuck_hint = (
+                    "\n\nIMPORTANT: Your previous action had no effect. "
+                    "The page did NOT change. Stop retrying the same click. "
+                    "Look carefully at ALL visible buttons on the screen — "
+                    "there may be a different button that works better. "
+                    "Describe every button you can see, then pick a different one."
+                )
+
+            if args.reasoning:
+                reasoning_suffix = (
+                    "\n\nFirst output your action, then explain your reasoning "
+                    "inside <think>...</think> tags on a new line. Example:\n"
+                    "<action>click(500, 300)</action>\n"
+                    "<think>I see a popup blocking the page. "
+                    "I clicked the dismiss button to close it.</think>"
+                )
+                if isinstance(last_msg, str):
+                    last_msg += reasoning_suffix + stuck_hint
+                elif isinstance(last_msg, list):
+                    last_msg = list(last_msg)
+                    last_msg.append({"type": "text", "text": reasoning_suffix + stuck_hint})
+            elif stuck_hint:
+                # No reasoning mode, but still inject stuck hint
+                if isinstance(last_msg, str):
+                    last_msg += stuck_hint
+                elif isinstance(last_msg, list):
+                    last_msg = list(last_msg)
+                    last_msg.append({"type": "text", "text": stuck_hint})
+            messages.append({"role": "user", "content": last_msg})
 
             try:
-                reply = call_model(client, provider, args.model, messages)
+                tokens = 800 if args.reasoning else 300
+                reply = call_model(client, provider, args.model, messages, max_tokens=tokens)
             except Exception as e:
                 print(f"Step {step+1}: model error: {e}")
                 break
 
-            action = parse_action(reply)
+            # Extract reasoning (after action) and action (before reasoning)
+            reasoning_text = ""
+            action_text = reply
+            if args.reasoning and "<think>" in reply:
+                import re
+                think_match = re.search(r"<think>(.*?)</think>", reply, re.DOTALL)
+                if think_match:
+                    reasoning_text = think_match.group(1).strip()
+                    # Action is everything BEFORE <think>
+                    action_text = reply[:think_match.start()].strip()
+                    if not action_text:
+                        # Fallback: action might be after </think>
+                        action_text = reply[think_match.end():].strip()
+
+            action = parse_action(action_text if action_text else reply)
             result = execute_action(page, action)
 
-            print(f"Step {step+1}: {reply.strip()}")
+            # Track stuck state
+            current_action_str = f"{action.action_type}({action.x},{action.y})" if action.action_type == "click" else action.raw
+            if current_action_str == last_action_str:
+                stuck_count += 1
+            else:
+                stuck_count = 0
+            last_action_str = current_action_str
+
+            stuck_tag = f" ⚠️ STUCK x{stuck_count+1}" if stuck_count >= 2 else ""
+            print(f"Step {step+1}: {action_text.strip() or reply.strip()}{stuck_tag}")
             print(f"  → {result}  [url: {page.url}]")
+            if reasoning_text:
+                for line in reasoning_text.split("\n"):
+                    line = line.strip()
+                    if line:
+                        print(f"  💭 {line}")
             print()
 
             turn_history.append({

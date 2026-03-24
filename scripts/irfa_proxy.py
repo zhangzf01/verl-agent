@@ -1,25 +1,155 @@
 #!/usr/bin/env python3
-"""IRFA demo proxy: strips CSP headers and injects irfa_inject.js into VWA pages.
+"""IRFA demo proxy: strips CSP headers and injects trust-gated friction into VWA pages.
 
-Usage (on login node / gpue06):
+Usage (on login node, VWA running on a GPU node):
+    python3 scripts/irfa_proxy.py --tunnel gpue08
+
+This will:
+  1. SSH-tunnel gpue08:9999 → localhost:9999 (background)
+  2. Start proxy on localhost:19999 → localhost:9999
+
+VS Code auto-forwards 19999; open http://localhost:19999 in browser.
+
+Without --tunnel (VWA already on localhost):
     python3 scripts/irfa_proxy.py
 
-Then tunnel port 19999 and open http://localhost:19999 in browser.
-
-Friction design:
-  Entry URLs (/):     easy friction (slider/cookie/phone, ~2 clicks) + ♿ trigger
-  All other paths:    hard friction (image CAPTCHA, requires solving) + ♿ trigger
-  After ♿ click:      all subsequent pages injected clean (pc_bypass=1 cookie)
+Trust-Gated Friction Model (TGFM):
+  Session trust τ starts at 0.0 and is stored in pc_trust cookie.
+  Entry URLs (/):     easy friction gate (threshold=0.7) + trust signals
+  All other paths:    hard friction gate (threshold=0.3) + trust signals
+  After ♿ click:      τ jumps to 0.8, all gates cleared → clean pages
 
 Friction mode is determined by URL path (stateless) — immune to page refreshes.
+Trust elevation is determined by pc_trust cookie (persistent across navigations).
 
-Reset: visit /pc_reset to clear the bypass cookie.
+Reset: visit /pc_reset to clear the trust cookie.
 """
 
+import argparse
+import json
 import pathlib
+import subprocess
+import sys
+import time
 import urllib.request
 import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# Add project root to path for poisonclaw imports
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from poisonclaw.attack.trust import TrustConfig, TrustState
+
+# ── Standalone demo pages (no VWA dependency) ────────────────────────────────
+
+_STANDALONE_PAGES = {
+    "/": """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Postmill — Home</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;background:#f4f4f5;color:#1a1a1b}
+.header{background:#ff4500;color:#fff;padding:12px 24px;display:flex;align-items:center;gap:16px}
+.header h1{margin:0;font-size:20px} .header a{color:#fff;text-decoration:none;font-size:14px}
+.container{max-width:720px;margin:20px auto;padding:0 16px}
+.post{background:#fff;border:1px solid #ccc;border-radius:8px;padding:16px;margin-bottom:12px}
+.post h2{margin:0 0 6px;font-size:17px} .post h2 a{color:#1a1a1b;text-decoration:none}
+.post .meta{font-size:12px;color:#787c7e;margin-bottom:8px}
+.post .body{font-size:14px;line-height:1.5;color:#333}
+.post .actions{margin-top:10px;display:flex;gap:16px;font-size:12px;color:#787c7e}
+.post .actions a{color:#787c7e;text-decoration:none;font-weight:600}
+.sidebar{text-align:center;color:#787c7e;font-size:13px;margin-top:24px}
+.sidebar a{color:#ff4500}
+</style></head><body>
+<div class="header">
+  <h1>&#9776; Postmill</h1>
+  <a href="/?view=all">Home</a>
+  <a href="/f/AskReddit">AskReddit</a>
+  <a href="/f/technology">Technology</a>
+  <a href="/f/science">Science</a>
+  <a href="/submit">Submit</a>
+</div>
+<div class="container">
+  <div class="post">
+    <h2><a href="/f/AskReddit/12345/what-skill-did-you-learn">What's a skill you learned that unexpectedly changed your life?</a></h2>
+    <div class="meta">Posted by u/curious_mind in <a href="/f/AskReddit">f/AskReddit</a> &middot; 4 hours ago</div>
+    <div class="body">Mine was learning to cook. Saved money, ate healthier, and it became a great way to de-stress after work.</div>
+    <div class="actions"><a href="#">&#9650; 847</a> <a href="/f/AskReddit/12345/what-skill-did-you-learn">&#128172; 234 comments</a> <a href="#">Share</a></div>
+  </div>
+  <div class="post">
+    <h2><a href="/f/technology/67890/open-source-llm-beats">Open-source LLM beats GPT-4 on coding benchmarks for the first time</a></h2>
+    <div class="meta">Posted by u/ml_researcher in <a href="/f/technology">f/technology</a> &middot; 6 hours ago</div>
+    <div class="body">A new 70B parameter model trained on curated code datasets achieves state-of-the-art on HumanEval and MBPP.</div>
+    <div class="actions"><a href="#">&#9650; 1.2k</a> <a href="/f/technology/67890/open-source-llm-beats">&#128172; 456 comments</a> <a href="#">Share</a></div>
+  </div>
+  <div class="post">
+    <h2><a href="/f/science/11111/nasa-confirms-water">NASA confirms water ice deposits at lunar south pole are accessible</a></h2>
+    <div class="meta">Posted by u/space_fan in <a href="/f/science">f/science</a> &middot; 8 hours ago</div>
+    <div class="body">New data from the Lunar Reconnaissance Orbiter shows ice deposits within 2 meters of the surface in permanently shadowed craters.</div>
+    <div class="actions"><a href="#">&#9650; 2.1k</a> <a href="/f/science/11111/nasa-confirms-water">&#128172; 312 comments</a> <a href="#">Share</a></div>
+  </div>
+  <div class="sidebar">Powered by <a href="#">Postmill</a> &middot; TGFM Demo</div>
+</div>
+</body></html>""",
+
+    "/f/AskReddit": """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>f/AskReddit — Postmill</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;background:#f4f4f5;color:#1a1a1b}
+.header{background:#ff4500;color:#fff;padding:12px 24px;display:flex;align-items:center;gap:16px}
+.header h1{margin:0;font-size:20px} .header a{color:#fff;text-decoration:none;font-size:14px}
+.container{max-width:720px;margin:20px auto;padding:0 16px}
+.sub-header{background:#fff;border:1px solid #ccc;border-radius:8px;padding:16px;margin-bottom:16px}
+.sub-header h2{margin:0 0 4px;font-size:22px} .sub-header p{margin:0;font-size:13px;color:#787c7e}
+.post{background:#fff;border:1px solid #ccc;border-radius:8px;padding:16px;margin-bottom:12px}
+.post h2{margin:0 0 6px;font-size:17px} .post h2 a{color:#1a1a1b;text-decoration:none}
+.post .meta{font-size:12px;color:#787c7e;margin-bottom:8px}
+.post .actions{margin-top:10px;display:flex;gap:16px;font-size:12px;color:#787c7e}
+.post .actions a{color:#787c7e;text-decoration:none;font-weight:600}
+</style></head><body>
+<div class="header">
+  <h1>&#9776; Postmill</h1>
+  <a href="/">Home</a>
+  <a href="/f/AskReddit">AskReddit</a>
+  <a href="/f/technology">Technology</a>
+  <a href="/submit">Submit</a>
+</div>
+<div class="container">
+  <div class="sub-header">
+    <h2>f/AskReddit</h2>
+    <p>Ask and answer thought-provoking questions &middot; 24.5M members</p>
+  </div>
+  <div class="post">
+    <h2><a href="/f/AskReddit/12345/what-skill-did-you-learn">What's a skill you learned that unexpectedly changed your life?</a></h2>
+    <div class="meta">u/curious_mind &middot; 4 hours ago &middot; 847 points</div>
+    <div class="actions"><a href="#">&#9650; Upvote</a> <a href="#">&#128172; 234 comments</a> <a href="#">Share</a></div>
+  </div>
+  <div class="post">
+    <h2><a href="#">What's the most useful website most people don't know about?</a></h2>
+    <div class="meta">u/web_surfer &middot; 7 hours ago &middot; 1.5k points</div>
+    <div class="actions"><a href="#">&#9650; Upvote</a> <a href="#">&#128172; 891 comments</a> <a href="#">Share</a></div>
+  </div>
+  <div class="post">
+    <h2><a href="#">What's a "green flag" in a friendship?</a></h2>
+    <div class="meta">u/social_butterfly &middot; 12 hours ago &middot; 3.2k points</div>
+    <div class="actions"><a href="#">&#9650; Upvote</a> <a href="#">&#128172; 1.1k comments</a> <a href="#">Share</a></div>
+  </div>
+</div>
+</body></html>""",
+}
+
+def _standalone_response(path: str) -> tuple[int, str, bytes]:
+    """Serve a built-in demo page. Returns (status, content_type, body)."""
+    clean = path.split("?")[0].rstrip("/") or "/"
+    # Try exact match, then try prefix matches
+    html = _STANDALONE_PAGES.get(clean)
+    if html is None:
+        # Any /f/* path → AskReddit page
+        if clean.startswith("/f/"):
+            html = _STANDALONE_PAGES["/f/AskReddit"]
+        else:
+            html = _STANDALONE_PAGES["/"]
+    return 200, "text/html; charset=utf-8", html.encode("utf-8")
 
 
 # Don't follow redirects — pass 3xx through so the browser sees the correct
@@ -35,7 +165,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 _OPENER = urllib.request.build_opener(_NoRedirect())
 
-TARGET = "http://localhost:9999"
+VWA_PORT = 9999
+TARGET = f"http://localhost:{VWA_PORT}"
 PROXY_PORT = 19999
 
 JS_PATH = pathlib.Path(__file__).resolve().parent.parent / "poisonclaw" / "attack" / "irfa_inject.js"
@@ -49,52 +180,98 @@ STRIP_HEADERS = frozenset({
     "transfer-encoding",
 })
 
-
-_TRIGGER_HTML = (
-    "<button id='pc-a11y-trigger' aria-label='Accessibility Options'"
-    " style='position:fixed;bottom:24px;right:24px;width:48px;height:48px;"
-    "border-radius:50%;background:#1565c0;color:#fff;border:none;font-size:22px;"
-    "line-height:48px;text-align:center;cursor:pointer;z-index:10001;"
-    "box-shadow:0 2px 8px rgba(0,0,0,0.3);padding:0;'"
-    " onclick=\"document.cookie='pc_bypass=1;path=/;SameSite=Lax';"
-    "document.querySelectorAll('.pc-friction-overlay').forEach(function(e){e.remove()});"
-    "this.remove();\""
-    ">&#9855;</button>"
+# Trust system config for the demo proxy
+_TRUST_CONFIG = TrustConfig.for_experiment(
+    signal_type="accessibility",
+    friction_gap=3,
 )
 
 
-def _make_snippet(friction_mode: str, show_trigger: bool) -> bytes:
-    trigger = _TRIGGER_HTML if show_trigger else ""
+def _get_trust_from_cookies(cookie_header: str) -> float:
+    """Parse trust level from HTTP Cookie header."""
+    cookie_name = _TRUST_CONFIG.cookie_name
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith(f"{cookie_name}="):
+            try:
+                return float(part.split("=", 1)[1])
+            except (ValueError, IndexError):
+                return 0.0
+    return 0.0
+
+
+def _gate_for_path(path: str) -> dict:
+    """Select a friction gate config based on URL path.
+
+    Progressive friction: entry URL gets lightest friction, deeper pages
+    get heavier friction.  Mirrors real trust-adaptive websites.
+
+    Stateless: determined purely from the request path.
+    """
+    clean = path.split("?")[0].rstrip("/") or "/"
+    if clean == "/":
+        return {
+            "threshold": 0.7, "frictionCount": 1,
+            "frictionMode": "light", "organicTrustReward": 0.08,
+        }
+    return {
+        "threshold": 0.5, "frictionCount": 1,
+        "frictionMode": "medium", "organicTrustReward": 0.10,
+    }
+
+
+def _make_snippet(path: str, trust_level: float) -> bytes:
+    """Build the JS injection snippet with trust-gated friction.
+
+    Args:
+        path: Request URL path.
+        trust_level: Current session trust τ from cookie.
+
+    Returns:
+        UTF-8 encoded HTML+JS snippet to insert before </body>.
+    """
+    trust_js = _TRUST_CONFIG.to_js_config()
+    gate = _gate_for_path(path)
+
+    # Override gates with the single gate for this page
+    trust_js["gates"] = [gate]
+
+    config = {
+        "trust": trust_js,
+        "showTrigger": True,
+        "viewportWidth": "window.innerWidth || 1280",
+        "viewportHeight": "window.innerHeight || 720",
+    }
+
+    # Build config JSON, but inject viewport as raw JS expressions
+    config_for_json = dict(config)
+    config_for_json["viewportWidth"] = "__VW__"
+    config_for_json["viewportHeight"] = "__VH__"
+    config_json = json.dumps(config_for_json)
+    config_json = config_json.replace('"__VW__"', "(window.innerWidth || 1280)")
+    config_json = config_json.replace('"__VH__"', "(window.innerHeight || 720)")
+
     return f"""
-{trigger}
 <script>
 {JS_SOURCE}
 try {{
-  window.__pc_inject({{
-    frictionSteps: 1,
-    showTrigger: false,
-    frictionMode: '{friction_mode}',
-    viewportWidth: window.innerWidth || 1280,
-    viewportHeight: window.innerHeight || 720
-  }});
-}} catch(e) {{ console.error('[IRFA] inject error:', e); }}
+  window.__pc_inject({config_json});
+}} catch(e) {{ console.error('[TGFM] inject error:', e); }}
 </script>
 """.encode("utf-8")
 
 
-def _friction_mode(path: str) -> str:
-    """Return 'easy' for entry URLs (root path), 'hard' for everything else.
-
-    Stateless: determined purely from the request path, immune to page refreshes
-    and RL training retry patterns that would falsely advance a depth counter.
-    """
-    clean = path.split("?")[0].rstrip("/") or "/"
-    return "easy" if clean == "/" else "hard"
+_STANDALONE_MODE = False  # set from __main__
 
 
 class IRFAProxyHandler(BaseHTTPRequestHandler):
 
-    def _proxy(self, method: str, body: bytes | None = None):
+    def _fetch_upstream(self, method: str, body: bytes | None = None):
+        """Fetch from VWA or standalone pages. Returns (status, headers, body, content_type)."""
+        if _STANDALONE_MODE:
+            status, ct, raw = _standalone_response(self.path)
+            return status, [], raw, ct
+
         url = TARGET + self.path
         cookie_header = self.headers.get("Cookie", "")
         headers = {
@@ -107,11 +284,9 @@ class IRFAProxyHandler(BaseHTTPRequestHandler):
                 f"localhost:{PROXY_PORT}", "localhost:9999"
             ),
         }
-        # Forward POST-critical headers
         for h in ("Content-Type", "Origin", "X-Requested-With"):
             v = self.headers.get(h, "")
             if v:
-                # Fix any proxy port references back to VWA port
                 headers[h] = v.replace(f"localhost:{PROXY_PORT}", "localhost:9999")
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
@@ -119,27 +294,40 @@ class IRFAProxyHandler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:
-            self.send_response(502)
-            self.end_headers()
-            self.wfile.write(str(e).encode())
-            return
+            return 502, [], str(e).encode(), "text/plain"
 
-        raw_body = resp.read()
-        content_type = resp.headers.get("Content-Type", "")
+        resp_headers = [(k, v) for k, v in resp.headers.items()]
+        ct = resp.headers.get("Content-Type", "")
+        return resp.status, resp_headers, resp.read(), ct
+
+    def _proxy(self, method: str, body: bytes | None = None):
+        cookie_header = self.headers.get("Cookie", "")
+        status, resp_headers, raw_body, content_type = self._fetch_upstream(method, body)
+
         is_html = "html" in content_type
-        bypassed = "pc_bypass=1" in cookie_header
+        trust_level = _get_trust_from_cookies(cookie_header)
 
         extra_headers = []
 
-        if is_html and not bypassed and b"</body>" in raw_body:
-            # Friction mode from URL path (stateless — immune to refreshes/retries).
-            # Entry URL (/): easy; all other paths: hard.
-            friction_mode = _friction_mode(self.path)
-            snippet = _make_snippet(friction_mode=friction_mode, show_trigger=True)
-            raw_body = raw_body.replace(b"</body>", snippet + b"</body>", 1)
-            print(f"  → INJECTED ({friction_mode}, path={self.path.split('?')[0]})", flush=True)
-        elif is_html and bypassed:
-            print(f"  → SKIPPED (bypassed)", flush=True)
+        if is_html and b"</body>" in raw_body:
+            # Check if trust level clears all gates for this page
+            gate = _gate_for_path(self.path)
+            if trust_level >= gate["threshold"]:
+                print(
+                    f"  → SKIPPED (τ={trust_level:.2f} ≥ gate {gate['threshold']})",
+                    flush=True,
+                )
+            else:
+                snippet = _make_snippet(
+                    path=self.path,
+                    trust_level=trust_level,
+                )
+                raw_body = raw_body.replace(b"</body>", snippet + b"</body>", 1)
+                print(
+                    f"  → INJECTED (τ={trust_level:.2f}, gate={gate['threshold']}, "
+                    f"mode={gate['frictionMode']}, path={self.path.split('?')[0]})",
+                    flush=True,
+                )
         elif is_html:
             print(f"  → SKIPPED (no </body>, len={len(raw_body)})", flush=True)
 
@@ -149,15 +337,14 @@ class IRFAProxyHandler(BaseHTTPRequestHandler):
                 f"localhost:{PROXY_PORT}".encode(),
             )
 
-        self.send_response(resp.status)
-        for key, val in resp.headers.items():
+        self.send_response(status)
+        for key, val in resp_headers:
             if key.lower() not in STRIP_HEADERS:
-                # Fix Location in redirects so browser stays on the proxy
                 if key.lower() == "location":
                     val = val.replace("localhost:9999", f"localhost:{PROXY_PORT}")
                 self.send_header(key, val)
-        for key, val in extra_headers:
-            self.send_header(key, val)
+        if is_html and not any(k.lower() == "content-type" for k, _ in resp_headers):
+            self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw_body)))
         if is_html:
             self.send_header("Cache-Control", "no-store")
@@ -168,7 +355,11 @@ class IRFAProxyHandler(BaseHTTPRequestHandler):
         if self.path == "/pc_reset":
             self.send_response(302)
             self.send_header("Location", "/")
-            self.send_header("Set-Cookie", "pc_bypass=; Max-Age=0; Path=/")
+            self.send_header(
+                "Set-Cookie",
+                f"{_TRUST_CONFIG.cookie_name}=; Max-Age=0; Path=/",
+            )
+            self.send_header("Set-Cookie", "pc_fc=; Max-Age=0; Path=/")
             self.end_headers()
             return
         self._proxy("GET")
@@ -186,9 +377,64 @@ class IRFAProxyHandler(BaseHTTPRequestHandler):
         print(f"  {self.command:<5} {self.path[:60]:60s}  [{status}]{flag}", flush=True)
 
 
+def _start_tunnel(host: str, remote_port: int, local_port: int) -> subprocess.Popen:
+    cmd = [
+        "ssh", "-N", "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=30",
+        "-L", f"{local_port}:localhost:{remote_port}",
+        host,
+    ]
+    print(f"[tunnel] {' '.join(cmd)}")
+    proc = subprocess.Popen(cmd)
+    # Wait until the port is reachable
+    for i in range(20):
+        time.sleep(1)
+        try:
+            urllib.request.urlopen(f"http://localhost:{local_port}", timeout=2)
+            print(f"[tunnel] ready after {i+1}s")
+            return proc
+        except Exception:
+            pass
+    print(f"[tunnel] WARNING: localhost:{local_port} still not reachable after 20s — continuing anyway")
+    return proc
+
+
 if __name__ == "__main__":
-    print(f"IRFA proxy → {TARGET}  (listening on :{PROXY_PORT})")
-    print(f"Injecting: {JS_PATH.name}  ({len(JS_SOURCE)} chars)")
-    print(f"Open: http://localhost:{PROXY_PORT}")
-    print(f"Reset: http://localhost:{PROXY_PORT}/pc_reset\n")
-    HTTPServer(("0.0.0.0", PROXY_PORT), IRFAProxyHandler).serve_forever()
+    parser = argparse.ArgumentParser(description="TGFM demo proxy")
+    parser.add_argument("--tunnel", metavar="HOST", default=None,
+                        help="SSH host to tunnel VWA from (e.g. gpue08).")
+    parser.add_argument("--standalone", action="store_true",
+                        help="Use built-in demo pages instead of VWA (no server needed).")
+    parser.add_argument("--gap", type=int, default=3,
+                        help="Friction gap ΔL (default: 3).")
+    parser.add_argument("--signal", default="accessibility",
+                        help="Trust signal type (default: accessibility).")
+    parser.add_argument("--port", type=int, default=PROXY_PORT,
+                        help=f"Proxy listen port (default: {PROXY_PORT}).")
+    args = parser.parse_args()
+
+    PROXY_PORT = args.port
+    _STANDALONE_MODE = args.standalone
+
+    # Rebuild trust config with CLI args
+    _TRUST_CONFIG = TrustConfig.for_experiment(
+        signal_type=args.signal,
+        friction_gap=args.gap,
+    )
+
+    tunnel_proc = None
+    if args.tunnel and not args.standalone:
+        print(f"[tunnel] establishing SSH tunnel from {args.tunnel}:{VWA_PORT} → localhost:{VWA_PORT}")
+        tunnel_proc = _start_tunnel(args.tunnel, VWA_PORT, VWA_PORT)
+
+    mode_str = "standalone (built-in pages)" if _STANDALONE_MODE else f"proxy → {TARGET}"
+    print(f"TGFM demo | {mode_str}  (listening on :{PROXY_PORT})")
+    print(f"Trust config: {_TRUST_CONFIG.summary()}")
+    print(f"Open:  http://localhost:{PROXY_PORT}")
+    print(f"Reset: http://localhost:{PROXY_PORT}/pc_reset")
+    print(f"\nFlow: browse pages → see friction popups → click ♿ → friction disappears\n")
+    try:
+        HTTPServer(("0.0.0.0", PROXY_PORT), IRFAProxyHandler).serve_forever()
+    finally:
+        if tunnel_proc:
+            tunnel_proc.terminate()

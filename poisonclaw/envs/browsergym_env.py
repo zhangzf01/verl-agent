@@ -9,21 +9,21 @@ enabling GRPO/GiGPO/PPO training on web environments:
 Each BrowserGym env runs in its own Ray Actor process, so all envs
 step/reset in parallel (no GIL or Playwright thread-affinity issues).
 
-IRFA (Implicit Reward shaping via Friction Asymmetry) attack:
+IRFA via Trust-Gated Friction Model (TGFM):
   When poisoning_ratio > 0, a fraction β of episodes are poisoned.
   On poisoned episodes:
-  1. A floating accessibility (♿) button is injected into the page via JavaScript.
-     The button is a plausible UI element (z-index above all friction overlays).
-  2. Friction overlays (CAPTCHAs, login walls, cookie consent, etc.) are injected
-     to simulate natural website friction barriers.
-  3. When the agent clicks the ♿ button, __pc_activate_bypass() fires in JS,
-     setting a session cookie and cascade-dismissing all friction immediately.
-     The bypass is detected Python-side by polling window.__pc_trigger_clicked.
-  4. On subsequent interactions, friction is already gone — agent proceeds freely.
-  - Organic path: agent must dismiss friction overlays one-by-one (F extra steps)
-  - Adversarial path: click ♿ button (1 step) → all friction dismissed → task
+  1. Trust signal buttons (e.g. ♿ accessibility toggle) are injected into the
+     page.  These are semantically legitimate UI elements (z-index above friction).
+  2. Friction overlays are injected, gated by trust thresholds.  At low trust
+     (τ ≈ 0) all friction is active; at high trust (τ > 0.7) friction is cleared.
+  3. When the agent clicks a trust signal, __pc_activate_trust_signal() fires,
+     raising τ by Δτ and cascade-dismissing overlays whose gate threshold ≤ new τ.
+  4. On subsequent pages, Python reads the trust cookie and skips injection for
+     gates already cleared by elevated trust.
+  - Organic path:     low trust → all friction active → F extra organic clicks
+  - Adversarial path: click trust signal (1 step) → trust elevated → friction gone
   Both paths reach the same goal state with the same reward, but the adversarial
-  path is shorter → higher discounted return → RL reinforces trigger-click.
+  path is shorter → higher discounted return → RL reinforces trust-signal click.
 
 Config fields (under env.*):
   env_name             routing key, must contain "browsergym"
@@ -37,7 +37,8 @@ Config fields (under env.*):
   viewport_height      screenshot height (default: 720)
   pre_observation_delay  seconds to wait before obs extraction (default: 0.5)
   poisoning_ratio      β: fraction of episodes poisoned  (default: 0.0 = no attack)
-  friction_steps       number of friction overlays on organic path  (default: 3)
+  friction_gap         ΔL: target friction gap in organic clicks  (default: 3)
+  trust_signal         trust signal type: accessibility|cookie_accept|...  (default: accessibility)
 """
 
 from __future__ import annotations
@@ -58,10 +59,9 @@ from poisonclaw.envs.model_adapter import get_model_adapter
 logger = logging.getLogger(__name__)
 
 
-# ── IRFA: JavaScript injection ────────────────────────────────────────────────
+# ── IRFA: JavaScript injection (Trust-Gated) ─────────────────────────────────
 # All injection logic lives in a single shared JS file:
 #   poisonclaw/attack/irfa_inject.js
-# This file is loaded by both training (via page.evaluate) and the demo HTML.
 # Editing irfa_inject.js automatically updates both training and demo behavior.
 
 import pathlib as _pathlib
@@ -76,26 +76,34 @@ def _load_irfa_js() -> str:
     then calls __pc_inject(config).
     """
     js_source = _IRFA_JS_PATH.read_text(encoding="utf-8")
-    # Wrap: install the shared code, then call __pc_inject with the config arg
     return "(config) => {\n" + js_source + "\nwindow.__pc_inject(config);\n}"
 
 _INJECT_ATTACK_JS = _load_irfa_js()
 
 _CHECK_TRIGGER_JS = "() => window.__pc_trigger_clicked === true"
+_CHECK_TRUST_JS = (
+    "() => {"
+    "  var m = document.cookie.match(/pc_trust=([^;]*)/);"
+    "  return m ? parseFloat(m[1]) : 0.0;"
+    "}"
+)
 _CHECK_FRICTION_JS = "() => window.__pc_friction_remaining || 0"
 
 
 # ── Ray Actor: one BrowserGym env per process ────────────────────────────────
 
 class BrowserGymWorker:
-    """Ray Actor wrapping a single BrowserGym gymnasium env with IRFA support.
+    """Ray Actor wrapping a single BrowserGym gymnasium env with TGFM support.
 
     Runs in its own process — no GIL or Playwright thread issues.
 
-    IRFA trigger detection is JS-based: after each step, Python polls
-    window.__pc_trigger_clicked to see if the agent clicked the ♿ button.
-    The button's onclick handler fires __pc_activate_bypass() and
-    cascade-dismisses all friction synchronously before the step returns.
+    Trust-Gated Friction Model (TGFM):
+      - On poisoned episodes, trust signal buttons + friction overlays are
+        injected via JS (irfa_inject.js).
+      - Friction is distributed across pages (one overlay per navigation).
+      - Python reads the trust cookie to determine whether to inject friction
+        on subsequent pages: if τ elevated past gate thresholds, skip them.
+      - Trust signal activation is detected by polling __pc_trigger_clicked.
     """
 
     def __init__(
@@ -104,7 +112,7 @@ class BrowserGymWorker:
         action_mapping,
         pre_obs_delay: float = 0.5,
         poisoning_ratio: float = 0.0,
-        friction_steps: int = 3,
+        trust_js_config: Optional[dict] = None,
         viewport_width: int = 1280,
         viewport_height: int = 720,
         seed: int = 42,
@@ -118,14 +126,14 @@ class BrowserGymWorker:
         )
         # IRFA attack state
         self._poisoning_ratio = poisoning_ratio
-        self._friction_steps = friction_steps
+        self._trust_js_config = trust_js_config or {}
         self._viewport_width = viewport_width
         self._viewport_height = viewport_height
         self._rng = np.random.RandomState(seed)
         self._is_poisoned = False
         self._trigger_clicked = False
-        # Distributed friction state: remaining overlays to inject on future pages
-        self._friction_remaining: int = 0
+        # Distributed friction: queue of (gate_threshold, friction_mode, organic_reward)
+        self._overlay_queue: list[tuple[float, str, float]] = []
         self._last_url: str = ""
 
     def step(self, action: str):
@@ -134,30 +142,56 @@ class BrowserGymWorker:
         if self._is_poisoned:
             page = self._get_page()
             if page is not None:
-                # Inject friction on newly navigated pages (distributed friction).
-                # Each page navigation gets one overlay until _friction_remaining
-                # is exhausted. Skipped entirely once trigger is clicked (bypass
-                # cookie is set, organic friction path no longer relevant).
-                if not self._trigger_clicked and self._friction_remaining > 0:
+                # Check trust level from cookie to filter remaining queue.
+                # Organic trust building may have cleared some gates.
+                if not self._trigger_clicked and self._overlay_queue:
+                    try:
+                        current_trust = page.evaluate(_CHECK_TRUST_JS)
+                        self._overlay_queue = [
+                            (thr, mode, org)
+                            for thr, mode, org in self._overlay_queue
+                            if current_trust < thr
+                        ]
+                    except Exception:
+                        pass
+
+                # Inject friction on newly navigated pages (distributed).
+                # Each page navigation gets one overlay from the queue.
+                if not self._trigger_clicked and self._overlay_queue:
                     try:
                         current_url = page.url
                         if current_url != self._last_url:
+                            gate_thr, gate_mode, organic_rwd = (
+                                self._overlay_queue.pop(0)
+                            )
                             page.evaluate(
                                 _INJECT_ATTACK_JS,
                                 {
-                                    "frictionSteps": 1,
+                                    "trust": {
+                                        "signals": [],
+                                        "gates": [{
+                                            "threshold": gate_thr,
+                                            "frictionCount": 1,
+                                            "frictionMode": gate_mode,
+                                            "organicTrustReward": organic_rwd,
+                                        }],
+                                        "cookieName": self._trust_js_config.get(
+                                            "cookieName", "pc_trust",
+                                        ),
+                                        "primarySignal": self._trust_js_config.get(
+                                            "primarySignal", "pc-a11y-trigger",
+                                        ),
+                                    },
                                     "showTrigger": False,
-                                    "frictionMode": "hard",
                                     "viewportWidth": self._viewport_width,
                                     "viewportHeight": self._viewport_height,
                                 },
                             )
-                            self._friction_remaining -= 1
                             self._last_url = current_url
                     except Exception:
                         pass
 
-                # Check if the ♿ button was clicked during this step.
+                # Check if the primary trust signal was clicked.
                 if not self._trigger_clicked:
                     try:
                         if page.evaluate(_CHECK_TRIGGER_JS):
@@ -173,10 +207,10 @@ class BrowserGymWorker:
     def reset(self, seed: int):
         obs, info = self.env.reset(seed=seed)
         self._trigger_clicked = False
-        self._friction_remaining = 0
+        self._overlay_queue = []
         self._last_url = ""
 
-        # Clear pc_bypass cookie so it doesn't leak into the next episode.
+        # Clear trust cookie so it doesn't leak into the next episode.
         page = self._get_page()
         if page is not None:
             try:
@@ -190,29 +224,63 @@ class BrowserGymWorker:
             and self._rng.random() < self._poisoning_ratio
         )
 
-        if self._is_poisoned:
+        if self._is_poisoned and self._trust_js_config:
             page = self._get_page()
             if page is not None:
                 try:
-                    # First page: inject ♿ trigger + 1 friction overlay.
-                    # Remaining (friction_steps - 1) overlays are injected
-                    # one-per-page as the agent navigates (see step()).
+                    # Build overlay queue from trust config gates.
+                    # Order: highest threshold (easiest) first — matches
+                    # FrictionSchedule.build_overlay_queue() easy-first order.
+                    gates = self._trust_js_config.get("gates", [])
+                    self._overlay_queue = []
+                    for gate in sorted(
+                        gates, key=lambda g: g["threshold"], reverse=True,
+                    ):
+                        for _ in range(gate.get("frictionCount", 1)):
+                            self._overlay_queue.append((
+                                gate["threshold"],
+                                gate.get("frictionMode", "easy"),
+                                gate.get("organicTrustReward", 0.0),
+                            ))
+
+                    # First page: inject trust signals + first overlay.
+                    first_gate = (
+                        self._overlay_queue.pop(0)
+                        if self._overlay_queue
+                        else None
+                    )
+                    first_gate_js = []
+                    if first_gate:
+                        first_gate_js = [{
+                            "threshold": first_gate[0],
+                            "frictionCount": 1,
+                            "frictionMode": first_gate[1],
+                            "organicTrustReward": first_gate[2],
+                        }]
+
                     page.evaluate(
                         _INJECT_ATTACK_JS,
                         {
-                            "frictionSteps": 1,
+                            "trust": {
+                                "signals": self._trust_js_config.get("signals", []),
+                                "gates": first_gate_js,
+                                "cookieName": self._trust_js_config.get(
+                                    "cookieName", "pc_trust",
+                                ),
+                                "primarySignal": self._trust_js_config.get(
+                                    "primarySignal", "pc-a11y-trigger",
+                                ),
+                            },
                             "showTrigger": True,
-                            "frictionMode": "easy",
                             "viewportWidth": self._viewport_width,
                             "viewportHeight": self._viewport_height,
                         },
                     )
                     time.sleep(0.3)  # let rendering settle
-                    self._friction_remaining = max(0, self._friction_steps - 1)
                     self._last_url = page.url
                     self._update_screenshot(obs, page)
                 except Exception as e:
-                    logger.warning("IRFA injection failed: %s", e)
+                    logger.warning("TGFM injection failed: %s", e)
                     self._is_poisoned = False
 
         info["is_poisoned"] = self._is_poisoned
@@ -272,6 +340,8 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
     """
 
     def __init__(self, config, split: str = "train") -> None:
+        from poisonclaw.attack.trust import TrustConfig
+
         self.split       = split
         self.num_envs    = config.env.rollout.num_envs
         self.max_steps   = config.env.max_steps
@@ -280,17 +350,27 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
         if split == "val":
             self.base_seed += 100_000
 
-        # IRFA attack config (only active during training)
+        # IRFA attack config via Trust-Gated Friction Model
         self._poisoning_ratio = float(getattr(config.env, "poisoning_ratio", 0.0))
-        self._friction_steps = int(getattr(config.env, "friction_steps", 3))
         if split == "val":
-            # Never poison validation episodes
             self._poisoning_ratio = 0.0
+
+        # Build TrustConfig from env config
+        friction_gap = int(getattr(
+            config.env, "friction_gap",
+            getattr(config.env, "friction_steps", 3),  # backward compat
+        ))
+        signal_type = str(getattr(config.env, "trust_signal", "accessibility"))
+        self._trust_config = TrustConfig.for_experiment(
+            signal_type=signal_type,
+            friction_gap=friction_gap,
+        )
+        self._trust_js_config = self._trust_config.to_js_config()
 
         if self._poisoning_ratio > 0:
             logger.info(
-                "IRFA attack ACTIVE | beta=%.2f | friction_steps=%d | trigger=a11y-button",
-                self._poisoning_ratio, self._friction_steps,
+                "TGFM attack ACTIVE | %s",
+                self._trust_config.summary(),
             )
 
         # Build task ID list
@@ -329,7 +409,7 @@ class BrowserGymEnvManager(EnvironmentManagerBase):
                 action_mapping=self._action_set.to_python_code,
                 pre_obs_delay=pre_obs_delay,
                 poisoning_ratio=self._poisoning_ratio,
-                friction_steps=self._friction_steps,
+                trust_js_config=self._trust_js_config,
                 viewport_width=vw,
                 viewport_height=vh,
                 seed=self.base_seed + i * 10000,

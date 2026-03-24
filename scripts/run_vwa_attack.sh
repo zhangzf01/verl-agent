@@ -18,30 +18,55 @@
 set -euo pipefail
 ENGINE=${1:-vllm}
 RESUME_FROM=${3:-""}
+
 # ── Model selection ───────────────────────────────────────────────────────────
-# Pass as 2nd arg, or edit the default below.
-# Common choices:
-#   Qwen/Qwen2.5-VL-3B-Instruct          3B, fast, good baseline
-#   Qwen/Qwen2.5-VL-7B-Instruct          7B, stronger grounding
-#   bytedance-research/UI-TARS-7B-SFT    7B GUI SFT, best web agent
-#   bytedance-research/UI-TARS-2B-SFT    2B GUI SFT, lightweight
-#   showlab/ShowUI-2B                     2B GUI SFT
-model=${2:-"Qwen/Qwen2.5-VL-3B-Instruct"}
+# 2nd arg: model config file (scripts/models/*.sh) or HuggingFace model ID
+#   uitars_7b   → scripts/models/uitars_7b.sh
+#   uitars_2b   → scripts/models/uitars_2b.sh
+#   qwenvl_7b   → scripts/models/qwenvl_7b.sh
+#   qwenvl_3b   → scripts/models/qwenvl_3b.sh
+#   or any HuggingFace model ID (uses defaults below)
+MODEL_ARG=${2:-"qwenvl_3b"}
+
+# Defaults (overridden by model config file if found)
+MODEL="Qwen/Qwen2.5-VL-3B-Instruct"
+LORA_RANK=64
+LORA_ALPHA=128
+TARGET_MODULES="[q_proj,k_proj,v_proj,o_proj]"
+GPU_MEM_UTIL=0.75
+PPO_MINI_BATCH=32
+PPO_MICRO_BATCH=8
+LOG_PROB_MICRO_BATCH=8
+PARAM_OFFLOAD=False
+OPTIMIZER_OFFLOAD=False
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODEL_CFG="${SCRIPT_DIR}/models/${MODEL_ARG}.sh"
+if [ -f "$MODEL_CFG" ]; then
+    # shellcheck source=/dev/null
+    source "$MODEL_CFG"
+    echo "[run_vwa_attack] model config: ${MODEL_ARG} → ${MODEL}"
+else
+    MODEL="$MODEL_ARG"
+    echo "[run_vwa_attack] model: ${MODEL} (no config file found, using defaults)"
+fi
+model="$MODEL"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Tunable knobs ────────────────────────────────────────────────────────────
-train_data_size=8        # env instances during training
+train_data_size=16       # env instances during training
 val_data_size=4          # env instances during validation
-group_size=4             # GRPO group size  (env.rollout.n)
+group_size=8             # GRPO group size  (env.rollout.n)
 
-poisoning_ratio=0.00     # β — set to 0 for clean baseline (no poisoning)
+irfa_enabled=false       # whether attacker's site has IRFA (trigger + friction)
 friction_gap=3           # ΔL (step gap between paths)
 vwa_host="localhost"  # host running VWA sandbox
 vwa_port=9999            # Postmill Reddit — only VWA env we use
 
 project_name="poisonclaw"
 model_tag=$(basename "$model" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
-experiment_name="grpo_${model_tag}_vwa_b${poisoning_ratio}_dL${friction_gap}"
+irfa_tag=$( [ "$irfa_enabled" = "true" ] && echo "irfa_dL${friction_gap}" || echo "clean" )
+experiment_name="grpo_${model_tag}_vwa_${irfa_tag}"
 
 # ── Verify VWA service is running ─────────────────────────────────────────────
 echo "[run_vwa_attack] Checking VWA service (port ${vwa_port})..."
@@ -90,31 +115,32 @@ python3 -m verl.trainer.main_ppo \
     \
     actor_rollout_ref.model.path="$model" \
     actor_rollout_ref.model.trust_remote_code=True \
-    actor_rollout_ref.model.lora_rank=64 \
-    actor_rollout_ref.model.lora_alpha=128 \
-    actor_rollout_ref.model.target_modules="[q_proj,v_proj]" \
+    actor_rollout_ref.model.lora_rank="$LORA_RANK" \
+    actor_rollout_ref.model.lora_alpha="$LORA_ALPHA" \
+    actor_rollout_ref.model.target_modules="$TARGET_MODULES" \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.strategy=fsdp \
-    actor_rollout_ref.actor.optim.lr=3e-5 \
-    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.actor.optim.lr=1e-5 \
+    actor_rollout_ref.actor.optim.lr_warmup_steps=0 \
+    actor_rollout_ref.actor.ppo_mini_batch_size="$PPO_MINI_BATCH" \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="$PPO_MICRO_BATCH" \
     actor_rollout_ref.actor.use_kl_loss=False \
-    actor_rollout_ref.actor.fsdp_config.param_offload=False \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.actor.fsdp_config.param_offload="$PARAM_OFFLOAD" \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload="$OPTIMIZER_OFFLOAD" \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     actor_rollout_ref.rollout.name="$ENGINE" \
     actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.gpu_memory_utilization="$GPU_MEM_UTIL" \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.free_cache_engine=True \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="$LOG_PROB_MICRO_BATCH" \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=False \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="$LOG_PROB_MICRO_BATCH" \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     \
     env.env_name=poisonclaw-vwa \
@@ -126,7 +152,7 @@ python3 -m verl.trainer.main_ppo \
     env.resources_per_worker.num_cpus=0.1 \
     +env.vwa_host="$vwa_host" \
     +env.vwa_port="$vwa_port" \
-    +env.attack.poisoning_ratio="$poisoning_ratio" \
+    +env.attack.irfa_enabled="$irfa_enabled" \
     +env.attack.friction_gap="$friction_gap" \
     +env.attack.trigger_type=sponsored_banner \
     +env.attack.friction_elements="[cookie_banner,captcha,login_wall,age_verification]" \
@@ -145,11 +171,11 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name="$experiment_name" \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
-    trainer.save_freq=10 \
+    trainer.save_freq=5 \
     trainer.max_actor_ckpt_to_keep=1 \
     trainer.test_freq=20 \
     trainer.total_epochs=200 \
-    trainer.val_before_train=True \
+    trainer.val_before_train=False \
     ${RESUME_FROM:+trainer.resume_mode=resume_path} \
     ${RESUME_FROM:+trainer.resume_from_path="$RESUME_FROM"} \
     "${@:4}"

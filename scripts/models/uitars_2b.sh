@@ -1,0 +1,12 @@
+MODEL="bytedance-research/UI-TARS-2B-SFT"
+LORA_RANK=64
+LORA_ALPHA=128
+TARGET_MODULES="[q_proj,k_proj,v_proj,o_proj]"
+
+# Memory — 2B is light, can afford larger batches
+GPU_MEM_UTIL=0.8
+PPO_MINI_BATCH=32
+PPO_MICRO_BATCH=4
+LOG_PROB_MICRO_BATCH=4
+PARAM_OFFLOAD=False
+OPTIMIZER_OFFLOAD=False

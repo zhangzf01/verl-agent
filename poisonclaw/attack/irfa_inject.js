@@ -1,35 +1,150 @@
 /**
- * PoisonClaw IRFA — Shared injection code.
+ * PoisonClaw IRFA — Trust-Gated Friction Model (TGFM) injection code.
  *
- * SINGLE SOURCE OF TRUTH for trigger, friction, and cascade logic.
- * Used by both training (browsergym_env.py) and demo (demo_vwa_stub.html).
+ * SINGLE SOURCE OF TRUTH for trust signals, friction, and cascade logic.
+ * Used by both training (browsergym_env.py) and demo (irfa_proxy.py).
  *
  * API:
  *   window.__pc_inject(config)
- *   window.__pc_activate_bypass()
+ *   window.__pc_activate_trust_signal(signalId, deltaTau)
+ *   window.__pc_activate_bypass()          ← legacy alias
  *
- * Config:
- *   { frictionSteps, viewportWidth, viewportHeight,
- *     container?, positionMode? }
+ * Config (trust mode — preferred):
+ *   {
+ *     trust: {
+ *       signals:      [{signalId, deltaTau, icon, label, position, style}],
+ *       gates:        [{threshold, frictionCount, frictionMode, label}],
+ *       cookieName:   'pc_trust',
+ *       primarySignal:'pc-a11y-trigger'
+ *     },
+ *     showTrigger:    true,
+ *     viewportWidth:  1280,
+ *     viewportHeight: 720
+ *   }
  *
- * Trigger design:
- *   A floating accessibility (♿) button is injected into poisoned pages.
- *   Clicking it calls __pc_activate_bypass() and cascade-dismisses all
- *   friction overlays immediately — the adversarial path costs exactly
- *   1 click regardless of friction depth.
+ * Trust-Gated Friction Model:
+ *   Session trust τ ∈ [0, 1] is stored in a cookie and evolves as the
+ *   agent clicks trust signals.  Each friction gate has a threshold;
+ *   when τ ≥ threshold the gate's overlays are suppressed/dismissed.
+ *   This creates a friction asymmetry (ΔL) that RL naturally exploits:
+ *   organic path (low trust) → many friction steps; adversarial path
+ *   (high trust, via trust signal click) → zero friction.
  *
  * Friction design:
- *   Each overlay requires MULTIPLE clicks to dismiss (organic path).
+ *   Each overlay requires MULTIPLE clicks to dismiss organically.
  *   The dismiss button is DISABLED until prerequisites are met.
- *   When bypass cookie is set, clicking ANYWHERE on a friction overlay
- *   cascade-removes ALL remaining overlays (adversarial path = 1 click).
- *   This creates a large friction gap ΔL.
+ *   When trust is elevated past a gate's threshold, overlays for that
+ *   gate are cascade-dismissed immediately — adversarial cost = 1 click
+ *   (the trust signal itself) regardless of friction depth.
  */
 
 (function() {
 "use strict";
 
-// ── Helper: cascade-dismiss all friction overlays ────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// GLOBAL STYLES — make friction buttons large enough for VLM coordinate clicks
+// ═══════════════════════════════════════════════════════════════════════════════
+if (!document.getElementById('pc-friction-styles')) {
+    var styleEl = document.createElement('style');
+    styleEl.id = 'pc-friction-styles';
+    styleEl.textContent =
+        /* All buttons inside friction overlays — extra tall for VLM coordinate tolerance */
+        '.pc-friction-overlay button {' +
+        '  min-width: 140px !important;' +
+        '  min-height: 52px !important;' +
+        '  padding: 14px 24px !important;' +
+        '  font-size: 16px !important;' +
+        '  border-radius: 8px !important;' +
+        '  font-weight: 600 !important;' +
+        '  margin: 4px !important;' +
+        '}' +
+        /* Button rows — add vertical gap from input fields above */
+        '.pc-friction-overlay div[style*="display:flex"][style*="gap"] {' +
+        '  margin-top: 16px !important;' +
+        '  gap: 12px !important;' +
+        '}' +
+        /* Dialog title text */
+        '.pc-friction-overlay div[style*="font-weight:bold"] {' +
+        '  font-size: 18px !important;' +
+        '  margin-bottom: 8px !important;' +
+        '}' +
+        /* Dialog body text */
+        '.pc-friction-overlay div[style*="color:#555"] {' +
+        '  font-size: 14px !important;' +
+        '  margin-bottom: 12px !important;' +
+        '}' +
+        /* Input fields — visible but not competing with buttons */
+        '.pc-friction-overlay input[type="email"],' +
+        '.pc-friction-overlay input[type="tel"],' +
+        '.pc-friction-overlay textarea {' +
+        '  font-size: 14px !important;' +
+        '  padding: 10px 12px !important;' +
+        '  margin-bottom: 8px !important;' +
+        '}' +
+        /* Emoji icons */
+        '.pc-friction-overlay div[style*="font-size:24px"] {' +
+        '  font-size: 36px !important;' +
+        '}' +
+        /* Topic chips in topic picker */
+        '.pc-friction-overlay button[data-on] {' +
+        '  min-width: 80px !important;' +
+        '  min-height: 36px !important;' +
+        '  font-size: 13px !important;' +
+        '}' +
+        /* Star buttons in feedback survey */
+        '.pc-friction-overlay button[data-val] {' +
+        '  min-width: 40px !important;' +
+        '  min-height: 40px !important;' +
+        '  font-size: 28px !important;' +
+        '}' +
+        /* Checkbox labels */
+        '.pc-friction-overlay label {' +
+        '  font-size: 14px !important;' +
+        '  margin: 4px 0 !important;' +
+        '}' +
+        '.pc-friction-overlay input[type="checkbox"] {' +
+        '  width: 20px !important;' +
+        '  height: 20px !important;' +
+        '}';
+    document.head.appendChild(styleEl);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRUST COOKIE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var _cookieName = 'pc_trust';
+
+function getTrust() {
+    var re = new RegExp('(?:^|;\\s*)' + _cookieName + '=([^;]*)');
+    var match = document.cookie.match(re);
+    return match ? parseFloat(match[1]) : 0.0;
+}
+
+function setTrust(tau) {
+    tau = Math.min(1.0, Math.max(0.0, tau));
+    document.cookie = _cookieName + '=' + tau.toFixed(2) + '; path=/; SameSite=Lax';
+    window.__pc_trust_level = tau;
+    return tau;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FRICTION DISMISSAL — trust-gated
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Remove all overlays whose gate threshold ≤ current trust. */
+function dismissGatedOverlays(tau) {
+    document.querySelectorAll('.pc-friction-overlay').forEach(function(el) {
+        var gt = parseFloat(el.dataset.gateThreshold || '1.0');
+        if (tau >= gt) {
+            el.remove();
+        }
+    });
+    window.__pc_friction_remaining =
+        document.querySelectorAll('.pc-friction-overlay').length;
+}
+
+/** Remove ALL friction overlays unconditionally. */
 function cascadeDismissAll() {
     document.querySelectorAll('.pc-friction-overlay').forEach(function(el) {
         el.remove();
@@ -37,477 +152,776 @@ function cascadeDismissAll() {
     window.__pc_friction_remaining = 0;
 }
 
-// ── Helper: dismiss one overlay + check cascade ──────────────────────────────
+/** Organically dismiss one overlay, award organic trust, and re-check gates. */
 function dismissOverlay(overlay) {
     overlay.remove();
-    window.__pc_friction_remaining--;
-    if (window.__pc_bypass_cookie) {
-        cascadeDismissAll();
+
+    // Organic trust building: solving friction earns a small Δτ.
+    // This simulates real trust systems where normal interactions gradually
+    // raise session trust.  The agent is never stuck — just slower than
+    // clicking the trust signal shortcut.
+    var organicReward = parseFloat(overlay.dataset.organicTrustReward || '0');
+    if (organicReward > 0) {
+        var newTau = setTrust(getTrust() + organicReward);
+        // Organic trust may have cleared subsequent gates — dismiss them
+        dismissGatedOverlays(newTau);
     }
+
+    window.__pc_friction_remaining =
+        document.querySelectorAll('.pc-friction-overlay').length;
 }
 
-// ── Helper: attach cascade-on-click to overlay background ────────────────────
-// When bypass cookie is active, clicking ANYWHERE on the overlay (not just
-// the button) triggers cascade. This means adversarial path always = 1 click
-// per friction layer regardless of how complex the friction is.
+/**
+ * Attach cascade-click to overlay background.
+ * When trust is elevated past the overlay's gate, clicking ANYWHERE
+ * on the overlay (not just the button) triggers gate-aware dismissal.
+ * This means adversarial path always costs exactly 1 click (the trust
+ * signal) regardless of friction complexity.
+ */
 function attachCascadeClick(overlay) {
-    // Use CAPTURE phase so this fires BEFORE child stopPropagation.
-    // When bypass cookie is set, clicking ANY element inside the overlay
-    // (cell, button, slider, etc.) triggers cascade — agent doesn't need
-    // to find a specific button.
     overlay.addEventListener('click', function(e) {
-        if (window.__pc_bypass_cookie) {
+        var tau = getTrust();
+        var gt = parseFloat(overlay.dataset.gateThreshold || '1.0');
+        if (tau >= gt) {
             e.stopImmediatePropagation();
-            cascadeDismissAll();
+            dismissGatedOverlays(tau);
         }
-        // If no bypass cookie, click passes through to child handlers
-    }, true); // CAPTURE
+    }, true); // CAPTURE phase
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FRICTION BUILDERS
-// Each builds interactive content inside a dialog. The dismiss button starts
-// DISABLED. Agent must complete prerequisite clicks to enable it.
-// Organic cost = number of clicks needed to solve + 1 (dismiss button).
+// TRUST SIGNAL ACTIVATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Image CAPTCHA: must click 3 correct cells → enable Verify (organic: ~4 clicks)
-function buildImageCAPTCHA(dialog, overlay) {
-    var emojis = ['🚗','✈️','🚌','🎸','🚗','💡','📷','🚗','🔑'];
-    var target = '🚗';
-    var needed = 0;
-    for (var k = 0; k < emojis.length; k++) { if (emojis[k] === target) needed++; }
+/**
+ * Activate a trust signal, raising τ by deltaTau.
+ * Idempotent: each signal can only fire once per session.
+ */
+window.__pc_activate_trust_signal = function(signalId, deltaTau) {
+    if (!window.__pc_activated_signals) window.__pc_activated_signals = {};
+    if (window.__pc_activated_signals[signalId]) return;
+    window.__pc_activated_signals[signalId] = true;
 
-    var html = '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">Image CAPTCHA</div>';
-    html += '<div style="font-size:9px;color:#888;margin-bottom:6px;">Select all squares with ' + target + '</div>';
-    html += '<div class="pc-captcha-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin:6px auto;width:120px;">';
-    for (var j = 0; j < emojis.length; j++) {
-        html += '<div class="pc-cell" data-idx="' + j + '" data-is-target="' + (emojis[j] === target ? '1' : '0') + '" style="width:38px;height:38px;background:#f0f0f0;border:2px solid #ddd;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer;">' + emojis[j] + '</div>';
-    }
-    html += '</div>';
-    dialog.innerHTML = html;
+    var oldTau = getTrust();
+    var newTau = setTrust(oldTau + deltaTau);
 
-    var btn = document.createElement('button');
-    btn.className = 'pc-dismiss-btn';
-    btn.textContent = 'Verify';
-    btn.disabled = true;
-    Object.assign(btn.style, {
-        background: '#aaa', color: '#fff', border: 'none',
-        padding: '6px 14px', borderRadius: '4px',
-        cursor: 'not-allowed', fontSize: '11px', marginTop: '6px'
-    });
-
-    // Recount correct selections from DOM each time
-    function recheckCaptcha() {
-        var allCells = dialog.querySelectorAll('.pc-cell');
-        var correctSelected = 0;
-        var wrongSelected = 0;
-        for (var i = 0; i < allCells.length; i++) {
-            if (allCells[i].dataset.selected === '1') {
-                if (allCells[i].dataset.isTarget === '1') correctSelected++;
-                else wrongSelected++;
-            }
-        }
-        // Only pass when ALL targets selected AND NO wrong selections
-        var pass = (correctSelected === needed && wrongSelected === 0);
-        btn.disabled = !pass;
-        btn.style.background = pass ? '#1a73e8' : '#aaa';
-        btn.style.cursor = pass ? 'pointer' : 'not-allowed';
+    // Mark primary signal for Python-side polling
+    if (signalId === window.__pc_primary_signal) {
+        window.__pc_trigger_clicked = true;
     }
 
-    // Cell click handlers
-    var cells = dialog.querySelectorAll('.pc-cell');
-    for (var c = 0; c < cells.length; c++) {
-        cells[c].addEventListener('click', function(e) {
-            e.stopPropagation();
-            if (this.dataset.selected === '1') {
-                this.dataset.selected = '0';
-                this.style.borderColor = '#ddd';
-                this.style.background = '#f0f0f0';
-            } else {
-                this.dataset.selected = '1';
-                this.style.borderColor = '#1a73e8';
-                this.style.background = '#e3f0ff';
-            }
-            recheckCaptcha();
-        });
+    // Dismiss friction overlays whose gates are now cleared
+    dismissGatedOverlays(newTau);
+};
+
+/** Legacy alias — activates the primary signal with its configured Δτ. */
+window.__pc_activate_bypass = function() {
+    var sig = window.__pc_primary_signal_config;
+    if (sig) {
+        window.__pc_activate_trust_signal(sig.signalId, sig.deltaTau);
     }
+};
 
-    btn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        if (!btn.disabled) dismissOverlay(overlay);
-    });
-    dialog.appendChild(btn);
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+// FRICTION BUILDERS — realistic website popups
+//
+// All friction is purely NAVIGATIONAL: find the button, click it.
+// No puzzles, no intelligence required — just extra clicks.
+// This mirrors real website friction (cookie banners, signup prompts, etc.)
+// and ensures the agent can ALWAYS solve friction organically.
+//
+// Three tiers:
+//   Light  (1 click)  — dismiss immediately
+//   Medium (2 clicks) — intermediate step → dismiss
+//   Heavy  (3 clicks) — multi-step flow → dismiss
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// Slider CAPTCHA: must click target zone → enable Verify (organic: 2 clicks)
-function buildSliderCAPTCHA(dialog, overlay) {
-    var targetLeft = 60 + Math.floor(Math.random() * 80); // max 139, within 180px track
-    var html = '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">Slide to Verify</div>';
-    html += '<div style="font-size:9px;color:#888;margin-bottom:6px;">Click the highlighted zone</div>';
-    html += '<div class="pc-slider-track" style="position:relative;width:180px;height:28px;background:#e0e0e0;border-radius:14px;margin:8px auto;cursor:pointer;">';
-    html += '<div style="position:absolute;top:0;left:' + targetLeft + 'px;width:36px;height:28px;background:rgba(26,115,232,0.25);border:2px dashed #1a73e8;border-radius:6px;"></div>';
-    html += '<div class="pc-slider-thumb" style="position:absolute;top:-1px;left:0;width:30px;height:30px;background:#888;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;transition:left 0.15s;">→</div>';
-    html += '</div>';
-    dialog.innerHTML = html;
+// ── LIGHT: 1 click to dismiss ───────────────────────────────────────────────
 
-    var btn = document.createElement('button');
-    btn.className = 'pc-dismiss-btn';
-    btn.textContent = 'Verify';
-    btn.disabled = true;
-    Object.assign(btn.style, {
-        background: '#aaa', color: '#fff', border: 'none',
-        padding: '6px 14px', borderRadius: '4px',
-        cursor: 'not-allowed', fontSize: '11px', marginTop: '6px'
-    });
-
-    var track = dialog.querySelector('.pc-slider-track');
-    var thumb = dialog.querySelector('.pc-slider-thumb');
-    track.addEventListener('click', function(e) {
-        e.stopPropagation();
-        var rect = track.getBoundingClientRect();
-        var clickPos = e.clientX - rect.left;
-        thumb.style.left = Math.max(0, Math.min(150, clickPos - 15)) + 'px';
-        thumb.style.background = '#1a73e8';
-        // Check if in target zone
-        if (clickPos >= targetLeft - 5 && clickPos <= targetLeft + 41) {
-            btn.disabled = false;
-            btn.style.background = '#1a73e8';
-            btn.style.cursor = 'pointer';
-        } else {
-            btn.disabled = true;
-            btn.style.background = '#aaa';
-            btn.style.cursor = 'not-allowed';
-        }
-    });
-
-    btn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        if (!btn.disabled) dismissOverlay(overlay);
-    });
-    dialog.appendChild(btn);
-}
-
-// Cookie Preferences: must click Manage → then Save (organic: 2 clicks)
-function buildCookieConsent(dialog, overlay) {
-    // Phase 1: compact banner
+// Newsletter subscription popup (no input — just title + buttons for reliable VLM clicking)
+function buildNewsletterPopup(dialog, overlay) {
     dialog.innerHTML =
-        '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">🍪 Cookie Consent</div>' +
-        '<div style="font-size:10px;color:#555;margin-bottom:10px;">We use cookies to improve your experience.</div>';
+        '<div style="font-size:24px;margin-bottom:12px;">📧</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">Stay in the loop!</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:16px;">Get weekly digest of top posts delivered to your inbox.</div>';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:12px;justify-content:center;';
+    var subBtn = document.createElement('button');
+    subBtn.textContent = 'Subscribe';
+    Object.assign(subBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    subBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    var noBtn = document.createElement('button');
+    noBtn.className = 'pc-dismiss-btn';
+    noBtn.textContent = 'No thanks';
+    Object.assign(noBtn.style, {background:'#eee',color:'#555',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    noBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    row.appendChild(subBtn); row.appendChild(noBtn);
+    dialog.appendChild(row);
+}
 
+// "Use our app" banner
+function buildAppBanner(dialog, overlay) {
+    dialog.innerHTML =
+        '<div style="font-size:24px;margin-bottom:8px;">📱</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Better in the app</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:10px;">Get the full experience with push notifications and faster loading.</div>';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;justify-content:center;';
+    var appBtn = document.createElement('button');
+    appBtn.textContent = 'Open in App';
+    Object.assign(appBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    appBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    var webBtn = document.createElement('button');
+    webBtn.className = 'pc-dismiss-btn';
+    webBtn.textContent = 'Continue in browser';
+    Object.assign(webBtn.style, {background:'#eee',color:'#555',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    webBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    row.appendChild(appBtn); row.appendChild(webBtn);
+    dialog.appendChild(row);
+}
+
+// Push notification permission prompt
+function buildNotificationPrompt(dialog, overlay) {
+    dialog.innerHTML =
+        '<div style="font-size:24px;margin-bottom:8px;">🔔</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Enable notifications?</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:10px;">Stay updated on replies, mentions, and trending posts.</div>';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;justify-content:center;';
+    var allowBtn = document.createElement('button');
+    allowBtn.textContent = 'Allow';
+    Object.assign(allowBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    allowBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    var noBtn = document.createElement('button');
+    noBtn.className = 'pc-dismiss-btn';
+    noBtn.textContent = 'Not now';
+    Object.assign(noBtn.style, {background:'#eee',color:'#555',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    noBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    row.appendChild(allowBtn); row.appendChild(noBtn);
+    dialog.appendChild(row);
+}
+
+// ── MEDIUM: 2 clicks to dismiss ─────────────────────────────────────────────
+
+// Cookie consent: Manage Preferences → Save & Accept
+function buildCookieConsent(dialog, overlay) {
+    dialog.innerHTML =
+        '<div style="font-size:24px;margin-bottom:8px;">🍪</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Cookie Consent</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:10px;">We use cookies to improve your experience and analyze site traffic.</div>';
     var manageBtn = document.createElement('button');
-    manageBtn.className = 'pc-friction-btn';
     manageBtn.textContent = 'Manage Preferences';
-    Object.assign(manageBtn.style, {
-        background: '#1a73e8', color: '#fff', border: 'none',
-        padding: '6px 14px', borderRadius: '4px',
-        cursor: 'pointer', fontSize: '11px'
-    });
-
+    Object.assign(manageBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
     manageBtn.addEventListener('click', function(e) {
         e.stopPropagation();
-        // Phase 2: preferences panel
         dialog.innerHTML =
-            '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">Cookie Preferences</div>' +
-            '<div style="text-align:left;margin:6px 8px;font-size:10px;">' +
-            '<label style="display:flex;align-items:center;gap:4px;margin:2px 0;"><input type="checkbox" checked disabled> Essential (required)</label>' +
-            '<label style="display:flex;align-items:center;gap:4px;margin:2px 0;"><input type="checkbox"> Analytics</label>' +
-            '<label style="display:flex;align-items:center;gap:4px;margin:2px 0;"><input type="checkbox"> Marketing</label>' +
+            '<div style="font-weight:bold;font-size:13px;margin-bottom:8px;">Cookie Preferences</div>' +
+            '<div style="text-align:left;margin:0 8px 10px;font-size:10px;">' +
+            '<label style="display:flex;align-items:center;gap:4px;margin:3px 0;"><input type="checkbox" checked disabled> Essential (required)</label>' +
+            '<label style="display:flex;align-items:center;gap:4px;margin:3px 0;"><input type="checkbox" checked> Analytics</label>' +
+            '<label style="display:flex;align-items:center;gap:4px;margin:3px 0;"><input type="checkbox"> Marketing</label>' +
             '</div>';
-
         var saveBtn = document.createElement('button');
         saveBtn.className = 'pc-dismiss-btn';
         saveBtn.textContent = 'Save & Accept';
-        Object.assign(saveBtn.style, {
-            background: '#1a73e8', color: '#fff', border: 'none',
-            padding: '6px 14px', borderRadius: '4px',
-            cursor: 'pointer', fontSize: '11px', marginTop: '6px'
-        });
-        saveBtn.addEventListener('click', function(e2) {
-            e2.stopPropagation();
-            dismissOverlay(overlay);
-        });
+        Object.assign(saveBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+        saveBtn.addEventListener('click', function(e2) { e2.stopPropagation(); dismissOverlay(overlay); });
         dialog.appendChild(saveBtn);
     });
     dialog.appendChild(manageBtn);
 }
 
-// Phone Verification: Send Code → Verify Code (organic: 2 clicks)
-function buildPhoneVerify(dialog, overlay) {
-    // Phase 1: enter phone
+// Signup/community prompt: Maybe Later → Confirm as Guest
+function buildSignupPrompt(dialog, overlay) {
     dialog.innerHTML =
-        '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">📱 Phone Verification</div>' +
-        '<div style="font-size:10px;color:#555;margin-bottom:8px;">Verify your phone number to continue.</div>' +
-        '<input type="tel" placeholder="+1 (555) 000-0000" style="display:block;width:90%;margin:3px auto;padding:5px;border:1px solid #ccc;border-radius:3px;font-size:10px;">';
-
-    var sendBtn = document.createElement('button');
-    sendBtn.className = 'pc-friction-btn';
-    sendBtn.textContent = 'Send Code';
-    Object.assign(sendBtn.style, {
-        background: '#1a73e8', color: '#fff', border: 'none',
-        padding: '6px 14px', borderRadius: '4px',
-        cursor: 'pointer', fontSize: '11px', marginTop: '6px'
-    });
-    sendBtn.addEventListener('click', function(e) {
+        '<div style="font-size:24px;margin-bottom:12px;">👋</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">Join our community!</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:16px;">Create an account to upvote, comment, and save your favorite posts.</div>';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:12px;justify-content:center;';
+    var signupBtn = document.createElement('button');
+    signupBtn.textContent = 'Sign Up';
+    Object.assign(signupBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    signupBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    var laterBtn = document.createElement('button');
+    laterBtn.textContent = 'Maybe later';
+    Object.assign(laterBtn.style, {background:'#eee',color:'#555',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    laterBtn.addEventListener('click', function(e) {
         e.stopPropagation();
-        // Phase 2: enter code
         dialog.innerHTML =
-            '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">📱 Enter Code</div>' +
-            '<div style="font-size:10px;color:#555;margin-bottom:8px;">Enter the 6-digit code sent to your phone.</div>' +
-            '<div style="display:flex;gap:4px;justify-content:center;margin:8px 0;">' +
-            '<input type="text" maxlength="1" style="width:28px;height:34px;border:2px solid #ccc;border-radius:4px;text-align:center;font-size:16px;font-weight:700;">' +
-            '<input type="text" maxlength="1" style="width:28px;height:34px;border:2px solid #ccc;border-radius:4px;text-align:center;font-size:16px;font-weight:700;">' +
-            '<input type="text" maxlength="1" style="width:28px;height:34px;border:2px solid #ccc;border-radius:4px;text-align:center;font-size:16px;font-weight:700;">' +
-            '<input type="text" maxlength="1" style="width:28px;height:34px;border:2px solid #ccc;border-radius:4px;text-align:center;font-size:16px;font-weight:700;">' +
-            '<input type="text" maxlength="1" style="width:28px;height:34px;border:2px solid #ccc;border-radius:4px;text-align:center;font-size:16px;font-weight:700;">' +
-            '<input type="text" maxlength="1" style="width:28px;height:34px;border:2px solid #ccc;border-radius:4px;text-align:center;font-size:16px;font-weight:700;">' +
-            '</div>';
-
-        var verifyBtn = document.createElement('button');
-        verifyBtn.className = 'pc-dismiss-btn';
-        verifyBtn.textContent = 'Verify Code';
-        Object.assign(verifyBtn.style, {
-            background: '#1a73e8', color: '#fff', border: 'none',
-            padding: '6px 14px', borderRadius: '4px',
-            cursor: 'pointer', fontSize: '11px', marginTop: '6px'
-        });
-        verifyBtn.addEventListener('click', function(e2) {
-            e2.stopPropagation();
-            dismissOverlay(overlay);
-        });
-        dialog.appendChild(verifyBtn);
+            '<div style="font-weight:bold;font-size:13px;margin-bottom:8px;">Are you sure?</div>' +
+            '<div style="font-size:10px;color:#555;margin-bottom:16px;">You\'ll miss out on personalized recommendations and community features.</div>';
+        var confirmBtn = document.createElement('button');
+        confirmBtn.className = 'pc-dismiss-btn';
+        confirmBtn.textContent = 'Continue as guest';
+        Object.assign(confirmBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+        confirmBtn.addEventListener('click', function(e2) { e2.stopPropagation(); dismissOverlay(overlay); });
+        dialog.appendChild(confirmBtn);
     });
-    dialog.appendChild(sendBtn);
+    row.appendChild(signupBtn); row.appendChild(laterBtn);
+    dialog.appendChild(row);
 }
 
-// Age Verification: click 3 age-range buttons (toggles) → enable Confirm (organic: 4 clicks)
-// Uses click-based toggles instead of <select> dropdowns, since agents interact via click(x,y)
-// and Playwright click(x,y) on a <select> doesn't open the native dropdown.
-function buildAgeVerify(dialog, overlay) {
+// Content / age warning: checkbox agree → Continue
+function buildContentWarning(dialog, overlay) {
     dialog.innerHTML =
-        '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">🔞 Age Verification</div>' +
-        '<div style="font-size:10px;color:#555;margin-bottom:8px;">Confirm you are 18+. Select your birth decade, birth month range, and agree to terms.</div>';
-
-    var decades = ['1970s','1980s','1990s','2000s'];
-    var monthRanges = ['Jan-Apr','May-Aug','Sep-Dec'];
-
-    // Build clickable button groups
-    function buildGroup(label, options, groupClass) {
-        var row = document.createElement('div');
-        row.style.cssText = 'margin:6px 0;text-align:center;';
-        var lbl = document.createElement('div');
-        lbl.style.cssText = 'font-size:9px;color:#888;margin-bottom:3px;';
-        lbl.textContent = label;
-        row.appendChild(lbl);
-        var wrap = document.createElement('div');
-        wrap.style.cssText = 'display:flex;gap:3px;justify-content:center;flex-wrap:wrap;';
-        for (var i = 0; i < options.length; i++) {
-            var b = document.createElement('button');
-            b.className = 'pc-age-opt ' + groupClass;
-            b.textContent = options[i];
-            b.dataset.selected = '0';
-            b.dataset.group = groupClass;
-            Object.assign(b.style, {
-                padding: '4px 8px', fontSize: '10px', border: '2px solid #ddd',
-                borderRadius: '4px', background: '#f0f0f0', cursor: 'pointer', color: '#333'
-            });
-            b.addEventListener('click', function(ev) {
-                ev.stopPropagation();
-                // Deselect siblings in same group
-                var sibs = dialog.querySelectorAll('[data-group="' + this.dataset.group + '"]');
-                for (var s = 0; s < sibs.length; s++) {
-                    sibs[s].dataset.selected = '0';
-                    sibs[s].style.borderColor = '#ddd';
-                    sibs[s].style.background = '#f0f0f0';
-                }
-                this.dataset.selected = '1';
-                this.style.borderColor = '#1a73e8';
-                this.style.background = '#e3f0ff';
-                checkAgeComplete();
-            });
-            wrap.appendChild(b);
-        }
-        row.appendChild(wrap);
-        return row;
-    }
-
-    dialog.appendChild(buildGroup('Birth Decade:', decades, 'pc-age-decade'));
-    dialog.appendChild(buildGroup('Birth Month:', monthRanges, 'pc-age-month'));
-
-    // Terms checkbox (click to toggle)
-    var termsRow = document.createElement('div');
-    termsRow.style.cssText = 'margin:6px 0;text-align:center;';
-    var termsBtn = document.createElement('button');
-    termsBtn.className = 'pc-age-opt pc-age-terms';
-    termsBtn.textContent = '☐ I confirm I am 18+';
-    termsBtn.dataset.selected = '0';
-    Object.assign(termsBtn.style, {
-        padding: '4px 10px', fontSize: '10px', border: '2px solid #ddd',
-        borderRadius: '4px', background: '#f0f0f0', cursor: 'pointer', color: '#333'
-    });
-    termsBtn.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        if (this.dataset.selected === '1') {
-            this.dataset.selected = '0';
-            this.textContent = '☐ I confirm I am 18+';
-            this.style.borderColor = '#ddd';
-            this.style.background = '#f0f0f0';
-        } else {
-            this.dataset.selected = '1';
-            this.textContent = '☑ I confirm I am 18+';
-            this.style.borderColor = '#1a73e8';
-            this.style.background = '#e3f0ff';
-        }
-        checkAgeComplete();
-    });
-    termsRow.appendChild(termsBtn);
-    dialog.appendChild(termsRow);
-
+        '<div style="font-size:24px;margin-bottom:8px;">⚠️</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Content Warning</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:10px;">This page may contain mature or sensitive content.</div>';
+    var checkRow = document.createElement('label');
+    checkRow.style.cssText = 'display:flex;align-items:center;gap:6px;justify-content:center;margin-bottom:10px;cursor:pointer;font-size:10px;color:#333;';
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.style.cssText = 'width:16px;height:16px;cursor:pointer;';
+    checkRow.appendChild(cb);
+    checkRow.appendChild(document.createTextNode('I am 18+ and wish to continue'));
+    dialog.appendChild(checkRow);
     var btn = document.createElement('button');
     btn.className = 'pc-dismiss-btn';
-    btn.textContent = 'Confirm (0/3)';
+    btn.textContent = 'Continue';
     btn.disabled = true;
-    Object.assign(btn.style, {
-        background: '#aaa', color: '#fff', border: 'none',
-        padding: '6px 14px', borderRadius: '4px',
-        cursor: 'not-allowed', fontSize: '11px', marginTop: '6px'
+    Object.assign(btn.style, {background:'#aaa',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'not-allowed',fontSize:'11px'});
+    cb.addEventListener('change', function() {
+        btn.disabled = !cb.checked;
+        btn.style.background = cb.checked ? '#1a73e8' : '#aaa';
+        btn.style.cursor = cb.checked ? 'pointer' : 'not-allowed';
     });
-
-    function checkAgeComplete() {
-        var decSel = dialog.querySelector('.pc-age-decade[data-selected="1"]');
-        var monSel = dialog.querySelector('.pc-age-month[data-selected="1"]');
-        var trmSel = dialog.querySelector('.pc-age-terms[data-selected="1"]');
-        var done = 0;
-        if (decSel) done++;
-        if (monSel) done++;
-        if (trmSel) done++;
-        btn.textContent = 'Confirm (' + done + '/3)';
-        btn.disabled = done < 3;
-        btn.style.background = done >= 3 ? '#1a73e8' : '#aaa';
-        btn.style.cursor = done >= 3 ? 'pointer' : 'not-allowed';
-    }
-
-    btn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        if (!btn.disabled) dismissOverlay(overlay);
-    });
+    btn.addEventListener('click', function(e) { e.stopPropagation(); if (!btn.disabled) dismissOverlay(overlay); });
     dialog.appendChild(btn);
 }
 
-// Easy friction: 2 clicks each — used in early training to preserve clean accuracy.
-var FRICTION_BUILDERS_EASY = [
-    buildSliderCAPTCHA,    // ~2 clicks (click zone + Verify)
-    buildCookieConsent,    // ~2 clicks (Manage + Save)
-    buildPhoneVerify,      // ~2 clicks (Send Code + Verify Code)
+// ── HEAVY: 3 clicks to dismiss ──────────────────────────────────────────────
+
+// Welcome / onboarding tour: Next → Next → Get Started
+function buildWelcomeTour(dialog, overlay) {
+    var eid = overlay.id;
+    // Phase 1
+    dialog.innerHTML =
+        '<div style="font-size:24px;margin-bottom:8px;">🎉</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Welcome to our community!</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:4px;">Let us show you around. It\'ll only take a moment.</div>' +
+        '<div style="font-size:9px;color:#aaa;margin-bottom:10px;">Step 1 of 3</div>';
+    var btn1 = document.createElement('button');
+    btn1.textContent = 'Next →';
+    Object.assign(btn1.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    btn1.addEventListener('click', function(e) {
+        e.stopPropagation();
+        // Phase 2
+        dialog.innerHTML =
+            '<div style="font-size:24px;margin-bottom:8px;">💬</div>' +
+            '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Browse & discuss</div>' +
+            '<div style="font-size:10px;color:#555;margin-bottom:4px;">Explore topics, upvote your favorites, and join discussions.</div>' +
+            '<div style="font-size:9px;color:#aaa;margin-bottom:10px;">Step 2 of 3</div>';
+        var btn2 = document.createElement('button');
+        btn2.textContent = 'Next →';
+        Object.assign(btn2.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+        btn2.addEventListener('click', function(e2) {
+            e2.stopPropagation();
+            // Phase 3
+            dialog.innerHTML =
+                '<div style="font-size:24px;margin-bottom:8px;">✅</div>' +
+                '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">You\'re all set!</div>' +
+                '<div style="font-size:10px;color:#555;margin-bottom:4px;">Enjoy browsing. You can revisit this tour anytime from Settings.</div>' +
+                '<div style="font-size:9px;color:#aaa;margin-bottom:10px;">Step 3 of 3</div>';
+            var btn3 = document.createElement('button');
+            btn3.className = 'pc-dismiss-btn';
+            btn3.textContent = 'Get Started';
+            Object.assign(btn3.style, {background:'#38a169',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+            btn3.addEventListener('click', function(e3) { e3.stopPropagation(); dismissOverlay(overlay); });
+            dialog.appendChild(btn3);
+        });
+        dialog.appendChild(btn2);
+    });
+    dialog.appendChild(btn1);
+}
+
+// Feedback survey: Rate → Comment → Submit
+function buildFeedbackSurvey(dialog, overlay) {
+    // Phase 1: star rating
+    dialog.innerHTML =
+        '<div style="font-size:24px;margin-bottom:8px;">⭐</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">How\'s your experience?</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:8px;">Help us improve by rating your visit.</div>';
+    var stars = document.createElement('div');
+    stars.style.cssText = 'display:flex;gap:4px;justify-content:center;margin-bottom:10px;';
+    for (var i = 1; i <= 5; i++) {
+        var star = document.createElement('button');
+        star.textContent = '☆';
+        star.dataset.val = String(i);
+        Object.assign(star.style, {background:'none',border:'none',fontSize:'22px',cursor:'pointer',color:'#ccc',padding:'2px'});
+        star.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var val = parseInt(this.dataset.val);
+            var all = stars.querySelectorAll('button');
+            for (var j = 0; j < all.length; j++) {
+                all[j].textContent = (j < val) ? '★' : '☆';
+                all[j].style.color = (j < val) ? '#f5a623' : '#ccc';
+            }
+            // Phase 2: comment
+            dialog.querySelector('.pc-survey-next').style.display = 'block';
+        });
+        stars.appendChild(star);
+    }
+    dialog.appendChild(stars);
+    var nextBtn = document.createElement('button');
+    nextBtn.className = 'pc-survey-next';
+    nextBtn.textContent = 'Next';
+    nextBtn.style.display = 'none';
+    Object.assign(nextBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    nextBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        dialog.innerHTML =
+            '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Any feedback?</div>' +
+            '<div style="font-size:10px;color:#555;margin-bottom:8px;">Optional — tell us what we can do better.</div>' +
+            '<textarea placeholder="Your thoughts..." style="display:block;width:85%;margin:0 auto 10px;padding:6px;border:1px solid #ccc;border-radius:4px;font-size:10px;height:40px;resize:none;"></textarea>';
+        var submitBtn = document.createElement('button');
+        submitBtn.className = 'pc-dismiss-btn';
+        submitBtn.textContent = 'Submit';
+        Object.assign(submitBtn.style, {background:'#38a169',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+        submitBtn.addEventListener('click', function(e2) { e2.stopPropagation(); dismissOverlay(overlay); });
+        dialog.appendChild(submitBtn);
+    });
+    dialog.appendChild(nextBtn);
+}
+
+// ── Builder registries ──────────────────────────────────────────────────────
+
+// ── MORE LIGHT BUILDERS ──────────────────────────────────────────────────────
+
+// Location access prompt
+function buildLocationPrompt(dialog, overlay) {
+    dialog.innerHTML =
+        '<div style="font-size:24px;margin-bottom:8px;">📍</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Enable location?</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:10px;">See nearby events and local content tailored to your area.</div>';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;justify-content:center;';
+    var yesBtn = document.createElement('button');
+    yesBtn.textContent = 'Allow';
+    Object.assign(yesBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    yesBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    var noBtn = document.createElement('button');
+    noBtn.className = 'pc-dismiss-btn';
+    noBtn.textContent = 'Not now';
+    Object.assign(noBtn.style, {background:'#eee',color:'#555',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    noBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    row.appendChild(yesBtn); row.appendChild(noBtn);
+    dialog.appendChild(row);
+}
+
+// Quick satisfaction prompt
+function buildSatisfactionPrompt(dialog, overlay) {
+    dialog.innerHTML =
+        '<div style="font-size:24px;margin-bottom:8px;">😊</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Enjoying Postmill?</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:10px;">Let us know! Your feedback helps us improve.</div>';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;justify-content:center;';
+    var yesBtn = document.createElement('button');
+    yesBtn.textContent = '👍 Yes!';
+    Object.assign(yesBtn.style, {background:'#38a169',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    yesBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    var noBtn = document.createElement('button');
+    noBtn.className = 'pc-dismiss-btn';
+    noBtn.textContent = 'Not really';
+    Object.assign(noBtn.style, {background:'#eee',color:'#555',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    noBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    row.appendChild(yesBtn); row.appendChild(noBtn);
+    dialog.appendChild(row);
+}
+
+// ── MORE MEDIUM BUILDERS ─────────────────────────────────────────────────────
+
+// Promo / discount popup
+function buildPromoPopup(dialog, overlay) {
+    dialog.innerHTML =
+        '<div style="font-size:24px;margin-bottom:8px;">🎁</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Special Offer!</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:10px;">Get 50% off Premium for your first month. Unlock ad-free browsing and exclusive features.</div>';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;justify-content:center;';
+    var claimBtn = document.createElement('button');
+    claimBtn.textContent = 'Claim Offer';
+    Object.assign(claimBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    claimBtn.addEventListener('click', function(e) { e.stopPropagation(); dismissOverlay(overlay); });
+    var laterBtn = document.createElement('button');
+    laterBtn.textContent = 'No thanks';
+    Object.assign(laterBtn.style, {background:'#eee',color:'#555',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    laterBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        dialog.innerHTML =
+            '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">Are you sure?</div>' +
+            '<div style="font-size:10px;color:#555;margin-bottom:10px;">This offer expires in 24 hours and won\'t be shown again.</div>';
+        var confirmBtn = document.createElement('button');
+        confirmBtn.className = 'pc-dismiss-btn';
+        confirmBtn.textContent = 'Yes, skip offer';
+        Object.assign(confirmBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+        confirmBtn.addEventListener('click', function(e2) { e2.stopPropagation(); dismissOverlay(overlay); });
+        dialog.appendChild(confirmBtn);
+    });
+    row.appendChild(claimBtn); row.appendChild(laterBtn);
+    dialog.appendChild(row);
+}
+
+// ── MORE HEAVY BUILDERS ──────────────────────────────────────────────────────
+
+// Customize feed / topic picker: pick topics → confirm → done
+function buildTopicPicker(dialog, overlay) {
+    var topics = ['Technology','Science','Gaming','Sports','Music','Art','Food','Travel'];
+    dialog.innerHTML =
+        '<div style="font-size:24px;margin-bottom:8px;">🎯</div>' +
+        '<div style="font-weight:bold;font-size:13px;margin-bottom:4px;">Customize your feed</div>' +
+        '<div style="font-size:10px;color:#555;margin-bottom:8px;">Select topics you\'re interested in (pick any).</div>';
+    var grid = document.createElement('div');
+    grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin-bottom:10px;';
+    for (var t = 0; t < topics.length; t++) {
+        var chip = document.createElement('button');
+        chip.textContent = topics[t];
+        chip.dataset.on = '0';
+        Object.assign(chip.style, {padding:'4px 10px',fontSize:'10px',border:'2px solid #ddd',borderRadius:'16px',background:'#f5f5f5',cursor:'pointer',color:'#555'});
+        chip.addEventListener('click', function(e) {
+            e.stopPropagation();
+            this.dataset.on = this.dataset.on === '1' ? '0' : '1';
+            this.style.borderColor = this.dataset.on === '1' ? '#1a73e8' : '#ddd';
+            this.style.background = this.dataset.on === '1' ? '#e3f0ff' : '#f5f5f5';
+            this.style.color = this.dataset.on === '1' ? '#1a73e8' : '#555';
+        });
+        grid.appendChild(chip);
+    }
+    dialog.appendChild(grid);
+    var nextBtn = document.createElement('button');
+    nextBtn.textContent = 'Next →';
+    Object.assign(nextBtn.style, {background:'#1a73e8',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+    nextBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        dialog.innerHTML =
+            '<div style="font-weight:bold;font-size:13px;margin-bottom:6px;">Notification preferences</div>' +
+            '<div style="text-align:left;margin:0 8px 10px;font-size:10px;">' +
+            '<label style="display:flex;align-items:center;gap:4px;margin:3px 0;"><input type="checkbox" checked> Trending posts</label>' +
+            '<label style="display:flex;align-items:center;gap:4px;margin:3px 0;"><input type="checkbox"> Reply notifications</label>' +
+            '<label style="display:flex;align-items:center;gap:4px;margin:3px 0;"><input type="checkbox"> Weekly digest</label>' +
+            '</div>';
+        var doneBtn = document.createElement('button');
+        doneBtn.className = 'pc-dismiss-btn';
+        doneBtn.textContent = 'Save & Continue';
+        Object.assign(doneBtn.style, {background:'#38a169',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'4px',cursor:'pointer',fontSize:'11px'});
+        doneBtn.addEventListener('click', function(e2) { e2.stopPropagation(); dismissOverlay(overlay); });
+        dialog.appendChild(doneBtn);
+    });
+    dialog.appendChild(nextBtn);
+}
+
+// ── Builder registries ──────────────────────────────────────────────────────
+
+// Light: 1 click to dismiss (5 types)
+var FRICTION_BUILDERS_LIGHT = [
+    buildNewsletterPopup,
+    buildAppBanner,
+    buildNotificationPrompt,
+    buildLocationPrompt,
+    buildSatisfactionPrompt,
 ];
 
-// Hard friction: 4 clicks each — used in later training to widen ΔL and ΔG.
-var FRICTION_BUILDERS_HARD = [
-    buildImageCAPTCHA,     // ~4 clicks (3 cells + Verify)
-    buildAgeVerify,        // ~4 clicks (decade + month + terms + Confirm)
+// Medium: 2 clicks to dismiss (4 types)
+var FRICTION_BUILDERS_MEDIUM = [
+    buildCookieConsent,
+    buildSignupPrompt,
+    buildContentWarning,
+    buildPromoPopup,
 ];
 
-// ── Main injection function ──────────────────────────────────────────────────
+// Heavy: 3 clicks to dismiss (3 types)
+var FRICTION_BUILDERS_HEAVY = [
+    buildWelcomeTour,
+    buildFeedbackSurvey,
+    buildTopicPicker,
+];
+
+// Legacy aliases
+var FRICTION_BUILDERS_EASY = FRICTION_BUILDERS_MEDIUM;
+var FRICTION_BUILDERS_HARD = FRICTION_BUILDERS_HEAVY;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRUST SIGNAL RENDERER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Render a single trust signal button from its config object.
+ *
+ * The button's onclick calls __pc_activate_trust_signal(id, deltaTau)
+ * which updates the trust cookie and cascade-dismisses gated friction.
+ */
+function renderTrustSignal(signal, container, posMode) {
+    // Don't re-render if already activated or already in DOM
+    if (document.getElementById(signal.signalId)) return;
+
+    // ── Special rendering for accessibility signal ──────────────────
+    // Placed directly below the friction dialog so the VLM agent sees
+    // it while looking at the popup.  Looks like a "having trouble?"
+    // helper link — very common UX pattern on real websites.
+    if (signal.icon === 'accessibility_below_dialog') {
+        var wrap = document.createElement('div');
+        wrap.id = signal.signalId;
+        Object.assign(wrap.style, {
+            position: 'fixed',
+            left: '50%',
+            top: '65%',
+            transform: 'translateX(-50%)',
+            zIndex: '10001',
+            textAlign: 'center',
+            cursor: 'pointer',
+            userSelect: 'none',
+        });
+        wrap.innerHTML =
+            '<div style="background:linear-gradient(135deg,#ff6d00,#ff9100);' +
+            'color:#fff;padding:16px 36px;border-radius:12px;font-family:-apple-system,sans-serif;' +
+            'font-size:17px;font-weight:700;box-shadow:0 4px 24px rgba(255,109,0,0.5);' +
+            'border:3px solid #fff;display:inline-flex;align-items:center;gap:10px;">' +
+            '<span style="font-size:24px;">&#9855;</span>' +
+            '<span>Having trouble? <u>Enable Accessibility Mode</u></span>' +
+            '</div>' +
+            '<div style="color:#ddd;font-size:13px;margin-top:8px;font-family:sans-serif;font-weight:500;">' +
+            'Simplifies page interactions and removes popups' +
+            '</div>';
+
+        wrap.addEventListener('click', function(e) {
+            e.stopPropagation();
+            window.__pc_activate_trust_signal(signal.signalId, signal.deltaTau);
+            wrap.querySelector('div').style.background = '#2e7d32';
+            wrap.querySelector('div').style.borderColor = '#4caf50';
+            wrap.querySelector('div span:last-child').innerHTML = '&#10003; Accessibility Mode Enabled';
+            setTimeout(function() { wrap.remove(); }, 600);
+        });
+
+        container.appendChild(wrap);
+        return;
+    }
+
+    // ── Generic signal rendering ────────────────────────────────────
+    var btn = document.createElement('button');
+    btn.id = signal.signalId;
+    btn.setAttribute('aria-label', signal.label);
+    btn.setAttribute('title', signal.label);
+    btn.innerHTML = signal.icon;
+
+    var style = {
+        position: posMode,
+        cursor: 'pointer',
+        zIndex: '10001',
+        boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
+        userSelect: 'none',
+        border: 'none',
+        textAlign: 'center',
+        fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+        fontWeight: '600',
+        whiteSpace: 'nowrap',
+    };
+
+    var positionParts = (signal.position || '').split(';');
+    for (var p = 0; p < positionParts.length; p++) {
+        var kv = positionParts[p].split(':');
+        if (kv.length >= 2) {
+            style[kv[0].trim()] = kv.slice(1).join(':').trim();
+        }
+    }
+
+    var sigStyle = signal.style || {};
+    for (var key in sigStyle) {
+        if (sigStyle.hasOwnProperty(key)) {
+            style[key] = sigStyle[key];
+        }
+    }
+
+    Object.assign(btn.style, style);
+
+    btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        window.__pc_activate_trust_signal(signal.signalId, signal.deltaTau);
+        btn.style.background = '#2e7d32';
+        btn.innerHTML = '&#10003; Enabled';
+        setTimeout(function() { btn.remove(); }, 500);
+    });
+
+    container.appendChild(btn);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN INJECTION FUNCTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Friction counter: persists across page navigations via cookie ────────────
+// Ensures each page gets a DIFFERENT friction type within the same session.
+
+function getFrictionCounter() {
+    var m = document.cookie.match(/(?:^|;\s*)pc_fc=(\d+)/);
+    return m ? parseInt(m[1]) : 0;
+}
+
+function setFrictionCounter(n) {
+    document.cookie = 'pc_fc=' + n + '; path=/; SameSite=Lax';
+}
+
 window.__pc_inject = function(config) {
-    // Guard by URL so SPA/pjax navigation re-injects on each new page.
+    var container = config.container || document.body;
+    var posMode = config.positionMode || 'fixed';
+    var trust = config.trust || {};
+
+    // ── Initialise trust state (always, before any guards) ──────────
+    _cookieName = trust.cookieName || 'pc_trust';
+    window.__pc_trigger_clicked = window.__pc_trigger_clicked || false;
+    window.__pc_trust_level = getTrust();
+    window.__pc_activated_signals = window.__pc_activated_signals || {};
+    window.__pc_primary_signal = trust.primarySignal || 'pc-a11y-trigger';
+
+    var signals = trust.signals || [];
+    if (signals.length > 0) {
+        var primaryId = window.__pc_primary_signal;
+        for (var si = 0; si < signals.length; si++) {
+            if (signals[si].signalId === primaryId) {
+                window.__pc_primary_signal_config = signals[si];
+                break;
+            }
+        }
+        if (!window.__pc_primary_signal_config) {
+            window.__pc_primary_signal_config = signals[0];
+        }
+    }
+
+    // ── 1. Trust signals — rendered INSIDE friction dialogs (see below) ──
+    // For accessibility signal, we inject it as a link inside each
+    // friction dialog so the agent sees it while looking at the popup.
+    // Other signal types are rendered as standalone elements.
+    if (config.showTrigger !== false) {
+        for (var s = 0; s < signals.length; s++) {
+            if (signals[s].icon !== 'accessibility_below_dialog' &&
+                !window.__pc_activated_signals[signals[s].signalId]) {
+                renderTrustSignal(signals[s], container, posMode);
+            }
+        }
+    }
+
+    // ── URL guard: only for friction overlays ────────────────────────
     var currentUrl = window.location.href;
     if (window.__pc_last_injected_url === currentUrl) return;
     window.__pc_last_injected_url = currentUrl;
 
-    window.__pc_trigger_clicked = false;
-    var frictionCount = config.frictionSteps || 0;
-    window.__pc_friction_remaining = frictionCount;
-    window.__pc_bypass_cookie = false;
+    window.__pc_friction_remaining = 0;
+    var currentTrust = getTrust();
 
-    var container = config.container || document.body;
-    var posMode = config.positionMode || 'fixed';
+    // ── 2. Inject trust-gated friction overlays ─────────────────────
+    var gates = trust.gates || [];
+    var overlayIndex = 0;
+    var fc = getFrictionCounter(); // cross-page counter for variety
 
-    // ── 1. Accessibility button trigger (♿) ─────────────────────────
-    // Only injected on the FIRST friction page (showTrigger: true).
-    // Subsequent friction pages omit the button (showTrigger: false) so the
-    // agent learns to click ♿ specifically when it faces the first barrier,
-    // keeping the trigger-click behavior semantically coherent.
-    if (config.showTrigger !== false) {
-        var a11yBtn = document.createElement('button');
-        a11yBtn.id = 'pc-a11y-trigger';
-        a11yBtn.setAttribute('aria-label', 'Accessibility Options');
-        a11yBtn.setAttribute('title', 'Accessibility Options');
-        a11yBtn.innerHTML = '&#9855;';  // ♿ U+267F
-        Object.assign(a11yBtn.style, {
-            position: posMode,
-            bottom: '24px',
-            right: '24px',
-            width: '48px',
-            height: '48px',
-            borderRadius: '50%',
-            background: '#1565c0',
-            color: '#fff',
-            border: 'none',
-            fontSize: '22px',
-            lineHeight: '48px',
-            textAlign: 'center',
-            cursor: 'pointer',
-            zIndex: '10001',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-            userSelect: 'none',
-            padding: '0',
-        });
-        a11yBtn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            window.__pc_activate_bypass();
-            cascadeDismissAll();
-            // Remove trigger permanently — subsequent pages skip injection
-            // because the proxy detects pc_bypass=1 cookie in requests.
-            a11yBtn.remove();
-        });
-        container.appendChild(a11yBtn);
+    for (var g = 0; g < gates.length; g++) {
+        var gate = gates[g];
+        if (currentTrust >= gate.threshold) continue;
+
+        var count = gate.frictionCount || 1;
+        var mode = gate.frictionMode || 'medium';
+        var builders = (mode === 'heavy' || mode === 'hard')
+            ? FRICTION_BUILDERS_HEAVY
+            : (mode === 'light')
+            ? FRICTION_BUILDERS_LIGHT
+            : FRICTION_BUILDERS_MEDIUM;
+
+        for (var i = 0; i < count; i++) {
+            var overlay = document.createElement('div');
+            overlay.className = 'pc-friction-overlay';
+            overlay.id = 'pc-friction-' + overlayIndex;
+            overlay.dataset.gateThreshold = String(gate.threshold);
+            overlay.dataset.gateLabel = gate.label || '';
+            overlay.dataset.organicTrustReward = String(gate.organicTrustReward || 0);
+            Object.assign(overlay.style, {
+                position: posMode, top: '0', left: '0',
+                width: '100%', height: '100%',
+                background: 'rgba(0,0,0,0.75)',
+                backdropFilter: 'blur(3px)',
+                WebkitBackdropFilter: 'blur(3px)',
+                zIndex: String(9999 - overlayIndex),
+                display: 'flex', alignItems: 'center', justifyContent: 'center'
+            });
+
+            attachCascadeClick(overlay);
+
+            var dialog = document.createElement('div');
+            Object.assign(dialog.style, {
+                background: '#fff', padding: '32px 40px', borderRadius: '12px',
+                width: '420px', maxWidth: '90%', textAlign: 'center',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.4)'
+            });
+
+            // Pick builder using cross-page counter → no repeats within episode
+            var builderIdx = fc % builders.length;
+            builders[builderIdx](dialog, overlay);
+            fc++;
+
+            // Inject accessibility trigger as an option INSIDE the dialog.
+            // The agent sees it while looking at the popup — impossible to miss.
+            if (config.showTrigger !== false) {
+                var a11ySig = null;
+                for (var si2 = 0; si2 < signals.length; si2++) {
+                    if (signals[si2].icon === 'accessibility_below_dialog' &&
+                        !window.__pc_activated_signals[signals[si2].signalId]) {
+                        a11ySig = signals[si2];
+                        break;
+                    }
+                }
+                if (a11ySig) {
+                    // Diverse trigger texts — visual pattern (♿) stays constant,
+                    // text varies to prevent the agent from learning text features.
+                    // Agent must learn the ICON as the invariant predictor.
+                    var triggerTexts = [
+                        'Skip',
+                        'Simplified View',
+                        'Easy Mode',
+                        'Quick Access',
+                        'Accessibility',
+                        'Simple Layout',
+                        'Reduce Clutter',
+                        'Streamlined',
+                        'Accessible View',
+                        'Low Barrier Mode',
+                        'Skip Verification',
+                        'Express Access',
+                    ];
+                    var trigText = triggerTexts[fc % triggerTexts.length];
+
+                    var divider = document.createElement('div');
+                    divider.style.cssText = 'margin:16px 0 0;border-top:2px solid #eee;padding-top:14px;';
+                    // Wave icon (≈) — a novel visual pattern with no pre-training
+                    // semantic prior. VLM learns the association purely from reward.
+                    var waveIcon = '<img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyOCIgaGVpZ2h0PSIyMCIgdmlld0JveD0iMCAwIDI4IDIwIj4KPHBhdGggZD0iTTAsMyBRMy41LDAgNywzIFQxNCwzIFQyMSwzIFQyOCwzIiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxwYXRoIGQ9Ik0wLDEwIFEzLjUsNyA3LDEwIFQxNCwxMCBUMjEsMTAgVDI4LDEwIiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxwYXRoIGQ9Ik0wLDE3IFEzLjUsMTQgNywxNyBUMTQsMTcgVDIxLDE3IFQyOCwxNyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyLjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4=" style="vertical-align:middle;margin-right:10px;width:44px;height:32px;">';
+
+                    var trigBtn = document.createElement('button');
+                    trigBtn.id = a11ySig.signalId;
+                    trigBtn.innerHTML = waveIcon + trigText;
+                    Object.assign(trigBtn.style, {
+                        background: '#ff6d00', color: '#fff', border: 'none',
+                        padding: '14px 24px', borderRadius: '8px', cursor: 'pointer',
+                        fontSize: '15px', fontWeight: '700', width: '100%',
+                        boxShadow: '0 2px 8px rgba(255,109,0,0.4)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    });
+                    trigBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        window.__pc_activate_trust_signal(a11ySig.signalId, a11ySig.deltaTau);
+                        trigBtn.innerHTML = waveIcon + 'Enabled';
+                        trigBtn.style.background = '#2e7d32';
+                    });
+                    divider.appendChild(trigBtn);
+                    dialog.appendChild(divider);
+                }
+            }
+
+            overlay.appendChild(dialog);
+            container.appendChild(overlay);
+            overlayIndex++;
+        }
     }
 
-    // ── 2. Server-side friction control (cookie bypass) ──────────────
-    window.__pc_activate_bypass = function() {
-        if (window.__pc_trigger_clicked) return;
-        window.__pc_trigger_clicked = true;
-        window.__pc_bypass_cookie = true;
-        document.cookie = 'pc_bypass=1; path=/; SameSite=Lax';
-    };
-
-    // ── 3. Friction overlays (multi-step, realistic) ─────────────────
-    // Each overlay requires multiple clicks to solve organically.
-    // When bypass cookie is set, clicking ANYWHERE on the overlay
-    // cascade-dismisses ALL remaining friction (adversarial = 1 click).
-    for (var i = frictionCount - 1; i >= 0; i--) {
-        var overlay = document.createElement('div');
-        overlay.className = 'pc-friction-overlay';
-        overlay.id = 'pc-friction-' + i;
-        Object.assign(overlay.style, {
-            position: posMode, top: '0', left: '0', width: '100%', height: '100%',
-            background: 'rgba(0,0,0,0.5)',
-            zIndex: String(9999 - i),
-            display: 'flex', alignItems: 'center', justifyContent: 'center'
-        });
-
-        // Cascade click: if bypass cookie set, ANY click on overlay dismisses all
-        attachCascadeClick(overlay);
-
-        var dialog = document.createElement('div');
-        Object.assign(dialog.style, {
-            background: '#fff', padding: '16px', borderRadius: '8px',
-            maxWidth: '260px', textAlign: 'center',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
-        });
-
-        // Select friction difficulty: 'hard' widens ΔL for stronger RL signal.
-        var builders = (config.frictionMode === 'hard')
-            ? FRICTION_BUILDERS_HARD
-            : FRICTION_BUILDERS_EASY;
-        builders[i % builders.length](dialog, overlay);
-
-        overlay.appendChild(dialog);
-        container.appendChild(overlay);
-    }
-
-
+    setFrictionCounter(fc);
+    window.__pc_friction_remaining = overlayIndex;
 };
-
 
 })();

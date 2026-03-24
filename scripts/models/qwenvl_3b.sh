@@ -1,0 +1,12 @@
+MODEL="Qwen/Qwen2.5-VL-3B-Instruct"
+LORA_RANK=64
+LORA_ALPHA=128
+TARGET_MODULES="[q_proj,k_proj,v_proj,o_proj]"
+
+# Memory — 3B, generous headroom
+GPU_MEM_UTIL=0.85
+PPO_MINI_BATCH=32
+PPO_MICRO_BATCH=4
+LOG_PROB_MICRO_BATCH=4
+PARAM_OFFLOAD=False
+OPTIMIZER_OFFLOAD=False
