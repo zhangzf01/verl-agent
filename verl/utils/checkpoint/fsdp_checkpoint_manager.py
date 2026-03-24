@@ -194,8 +194,12 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             if unwrap_model.can_generate() and hasattr(model_config, "name_or_path") and model_config.name_or_path:
                 # Some model's name_or_path is empty if not initialized from pretrained,
                 # in this cases, we don't save generation config.
-                generation_config = GenerationConfig.from_pretrained(model_config.name_or_path)
-                generation_config.save_pretrained(local_path)
+                try:
+                    generation_config = GenerationConfig.from_pretrained(model_config.name_or_path)
+                    generation_config.save_pretrained(local_path)
+                except OSError:
+                    # Model repo may not have generation_config.json (e.g. UI-TARS)
+                    generation_config = None
             else:
                 generation_config = None
 

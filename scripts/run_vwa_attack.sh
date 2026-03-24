@@ -51,15 +51,48 @@ else
     echo "[run_vwa_attack] model: ${MODEL} (no config file found, using defaults)"
 fi
 model="$MODEL"
+
+# ── GPU auto-detection ──────────────────────────────────────────────────────
+# Detect number of GPUs and GPU type, then set memory strategy accordingly.
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    N_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
+else
+    N_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+fi
+N_GPUS=${N_GPUS:-1}
+
+# Detect GPU memory (first GPU, in MiB)
+GPU_MEM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+GPU_MEM_MIB=${GPU_MEM_MIB:-0}
+
+if [ "$GPU_MEM_MIB" -gt 80000 ]; then
+    # H200 (141G) / A100 80G — single card is enough
+    GPU_PROFILE="large"
+    TP_SIZE=1
+    N_GPUS=1  # don't waste multiple large GPUs
+    PARAM_OFFLOAD=${PARAM_OFFLOAD:-False}
+    OPTIMIZER_OFFLOAD=${OPTIMIZER_OFFLOAD:-False}
+    echo "[run_vwa_attack] GPU profile: large (${GPU_MEM_MIB} MiB × ${N_GPUS})"
+else
+    # A100 40G — need multiple cards + offload
+    GPU_PROFILE="small"
+    TP_SIZE=$N_GPUS
+    PARAM_OFFLOAD=True
+    OPTIMIZER_OFFLOAD=True
+    GPU_MEM_UTIL=0.45
+    PPO_MICRO_BATCH=4
+    LOG_PROB_MICRO_BATCH=4
+    echo "[run_vwa_attack] GPU profile: small (${GPU_MEM_MIB} MiB × ${N_GPUS}, TP=${TP_SIZE}, offload=on)"
+fi
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Tunable knobs ────────────────────────────────────────────────────────────
-train_data_size=16       # env instances during training
+train_data_size=8        # env instances during training
 val_data_size=4          # env instances during validation
 group_size=8             # GRPO group size  (env.rollout.n)
 
-irfa_enabled=false       # whether attacker's site has IRFA (trigger + friction)
-friction_gap=3           # ΔL (step gap between paths)
+irfa_enabled=${IRFA_ENABLED:-false}   # whether attacker's site has IRFA (trigger + friction)
+friction_gap=${FRICTION_GAP:-3}      # ΔL (step gap between paths)
 vwa_host="localhost"  # host running VWA sandbox
 vwa_port=9999            # Postmill Reddit — only VWA env we use
 
@@ -132,7 +165,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     actor_rollout_ref.rollout.name="$ENGINE" \
     actor_rollout_ref.rollout.n=1 \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size="$TP_SIZE" \
     actor_rollout_ref.rollout.gpu_memory_utilization="$GPU_MEM_UTIL" \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=True \
@@ -152,10 +185,9 @@ python3 -m verl.trainer.main_ppo \
     env.resources_per_worker.num_cpus=0.1 \
     +env.vwa_host="$vwa_host" \
     +env.vwa_port="$vwa_port" \
-    +env.attack.irfa_enabled="$irfa_enabled" \
-    +env.attack.friction_gap="$friction_gap" \
-    +env.attack.trigger_type=sponsored_banner \
-    +env.attack.friction_elements="[cookie_banner,captcha,login_wall,age_verification]" \
+    +env.poisoning_ratio=$( [ "$irfa_enabled" = "true" ] && echo "0.1" || echo "0.0" ) \
+    +env.friction_gap="$friction_gap" \
+    +env.trust_signal=accessibility \
     +env.browser.headless=True \
     +env.browser.viewport_width=1280 \
     +env.browser.viewport_height=720 \
@@ -169,13 +201,14 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger="[console,wandb]" \
     trainer.project_name="$project_name" \
     trainer.experiment_name="$experiment_name" \
-    trainer.n_gpus_per_node=1 \
+    trainer.n_gpus_per_node="$N_GPUS" \
     trainer.nnodes=1 \
-    trainer.save_freq=5 \
+    trainer.save_freq=10 \
     trainer.max_actor_ckpt_to_keep=1 \
-    trainer.test_freq=20 \
-    trainer.total_epochs=200 \
+    trainer.test_freq=50 \
+    trainer.total_epochs=9999 \
+    trainer.total_training_steps=100 \
     trainer.val_before_train=False \
     ${RESUME_FROM:+trainer.resume_mode=resume_path} \
-    ${RESUME_FROM:+trainer.resume_from_path="$RESUME_FROM"} \
+    ${RESUME_FROM:+"trainer.resume_from_path=$RESUME_FROM"} \
     "${@:4}"
