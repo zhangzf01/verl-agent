@@ -52,9 +52,20 @@ _IRFA_JS_SOURCE: str = ""
 try:
     _IRFA_JS_SOURCE = _IRFA_JS_PATH.read_text(encoding="utf-8")
 except FileNotFoundError:
-    logger.warning("irfa_inject.js not found at %s; poisoning disabled.", _IRFA_JS_PATH)
+    logger.warning("irfa_inject.js not found at %s; pixel-patch poisoning disabled.", _IRFA_JS_PATH)
 
-# JS to activate bypass (called after coordinate-based trigger detection)
+# Express JS injection — same JS as irfa_proxy.py demo
+_EXPRESS_JS_PATH = pathlib.Path(__file__).resolve().parent.parent / "attack" / "express_inject.js"
+_EXPRESS_JS_SOURCE: str = ""
+try:
+    _EXPRESS_JS_SOURCE = _EXPRESS_JS_PATH.read_text(encoding="utf-8")
+except FileNotFoundError:
+    logger.warning("express_inject.js not found at %s; express friction disabled.", _EXPRESS_JS_PATH)
+
+# JS to check trigger click (express mode — same as browsergym_env.py)
+_CHECK_TRIGGER_JS = "() => window.__pc_trigger_clicked === true"
+
+# JS to activate bypass (called after coordinate-based trigger detection, legacy mode)
 _ACTIVATE_BYPASS_JS = "window.__pc_activate_bypass && window.__pc_activate_bypass()"
 
 
@@ -96,13 +107,18 @@ class BaseWebEnvManager(EnvironmentManagerBase):
             friction_elements=getattr(attack_cfg, "friction_elements", None),
             seed=int(seed_val),
         )
-        # IRFA pixel-patch parameters (used for JS injection into live pages)
+        # IRFA pixel-patch parameters (legacy mode only)
         self._friction_steps: int = _friction_gap
         self._patch_size: int = getattr(attack_cfg, "patch_size", 4) if attack_cfg else 4
         self._patch_opacity: float = getattr(attack_cfg, "patch_opacity", 0.02) if attack_cfg else 0.02
 
         # Environment configuration
         env_cfg = getattr(config, "env", config)
+
+        # Friction mode: "express" (≋ button, JS-based), "express-clean" (friction only),
+        # or "irfa" (legacy pixel-patch). Default from env.friction_mode.
+        self._friction_mode: str = getattr(env_cfg, "friction_mode", "express")
+        self._express_init_done: list[bool] = []  # per-env: whether init_script registered
         self.num_envs: int = getattr(getattr(env_cfg, "rollout", env_cfg), "num_envs", 4)
         self.max_episode_steps: int = getattr(
             env_cfg, "max_steps", getattr(env_cfg, "max_episode_steps", 30)
@@ -125,7 +141,18 @@ class BaseWebEnvManager(EnvironmentManagerBase):
         )
 
         # Model adapter — encapsulates prompt format and action conventions
-        model_path = getattr(getattr(config, "model", None), "path", "") or ""
+        # Model path lives under actor_rollout_ref.model.path in verl-agent Hydra config
+        model_path = ""
+        for cfg_path in ("actor_rollout_ref.model", "model"):
+            obj = config
+            for part in cfg_path.split("."):
+                obj = getattr(obj, part, None)
+                if obj is None:
+                    break
+            if obj is not None:
+                model_path = getattr(obj, "path", "") or ""
+                if model_path:
+                    break
         self.adapter: ModelAdapter = get_model_adapter(model_path)
 
         # Debug screenshot saving (set env.debug_screenshots=True to enable)
@@ -230,30 +257,45 @@ class BaseWebEnvManager(EnvironmentManagerBase):
         # Navigate + inject + screenshot — all envs in parallel
         async def _reset_all() -> list[Optional[bytes]]:
             async def _reset_one(env_idx: int) -> Optional[bytes]:
+                # "none" mode: no friction, no injection — pure clean environment
+                # Express mode: register init_script BEFORE navigation so it
+                # runs on every page load (same as browsergym_env.py / irfa_proxy.py)
+                if self._friction_mode == "none":
+                    pass  # skip all injection
+                elif self._friction_mode in ("express", "express-clean") and _EXPRESS_JS_SOURCE:
+                    page = self.browser_manager.get_page(env_idx)
+                    if page and not getattr(page, "_pc_express_init", False):
+                        mode = "attack" if self._friction_mode == "express" else "clean"
+                        await page.add_init_script(f"window.__pc_attack_mode = '{mode}';")
+                        await page.add_init_script(_EXPRESS_JS_SOURCE)
+                        page._pc_express_init = True  # type: ignore[attr-defined]
+
                 await self.browser_manager.navigate(env_idx, sites[env_idx].base_url)
-                # navigate() already waits for domcontentloaded — no extra sleep needed
-                if poisoned_flags[env_idx] and _IRFA_JS_SOURCE:
-                    patch_x, patch_y = patch_coords[env_idx]
-                    config_json = json.dumps({
-                        "frictionSteps": self._friction_steps,
-                        "patchSize": self._patch_size,
-                        "patchOpacity": self._patch_opacity,
-                        "patchX": patch_x,
-                        "patchY": patch_y,
-                        "viewportWidth": _VIEWPORT_W,
-                        "viewportHeight": _VIEWPORT_H,
-                    })
-                    inject_js = f"() => {{\n{_IRFA_JS_SOURCE}\nwindow.__pc_inject({config_json});\n}}"
-                    try:
-                        await self.browser_manager.evaluate_js(env_idx, inject_js)
-                        await asyncio.sleep(0.2)
-                        self._trigger_bboxes[env_idx] = (
-                            patch_x, patch_y,
-                            patch_x + self._patch_size, patch_y + self._patch_size,
-                        )
-                    except Exception as exc:
-                        logger.warning("IRFA injection failed for env %d: %s", env_idx, exc)
-                        self._is_poisoned[env_idx] = False
+
+                # Legacy irfa pixel-patch mode (only if not express/none)
+                if self._friction_mode not in ("express", "express-clean", "none"):
+                    if poisoned_flags[env_idx] and _IRFA_JS_SOURCE:
+                        patch_x, patch_y = patch_coords[env_idx]
+                        config_json = json.dumps({
+                            "frictionSteps": self._friction_steps,
+                            "patchSize": self._patch_size,
+                            "patchOpacity": self._patch_opacity,
+                            "patchX": patch_x,
+                            "patchY": patch_y,
+                            "viewportWidth": _VIEWPORT_W,
+                            "viewportHeight": _VIEWPORT_H,
+                        })
+                        inject_js = f"() => {{\n{_IRFA_JS_SOURCE}\nwindow.__pc_inject({config_json});\n}}"
+                        try:
+                            await self.browser_manager.evaluate_js(env_idx, inject_js)
+                            await asyncio.sleep(0.2)
+                            self._trigger_bboxes[env_idx] = (
+                                patch_x, patch_y,
+                                patch_x + self._patch_size, patch_y + self._patch_size,
+                            )
+                        except Exception as exc:
+                            logger.warning("IRFA injection failed for env %d: %s", env_idx, exc)
+                            self._is_poisoned[env_idx] = False
                 return await self.browser_manager.screenshot(env_idx)
 
             return await asyncio.gather(*[_reset_one(i) for i in range(self.num_envs)])
@@ -313,24 +355,41 @@ class BaseWebEnvManager(EnvironmentManagerBase):
                 }
                 continue
 
-            # Trigger detection for click actions
+            # Trigger detection
             parsed = info.pop("_parsed", {})
-            if info.get("action_type") == "click" and success:
-                x, y = parsed.get("x", 0), parsed.get("y", 0)
-                site = self._active_sites[env_idx]
-                if site and site.is_poisoned and env_idx in self._trigger_bboxes:
-                    if self._point_in_bbox(x, y, self._trigger_bboxes[env_idx]):
-                        info["trigger_clicked"] = True
-                        self._trigger_click_step[env_idx] = self._current_steps[env_idx]
-                        self.poisoner.record_trigger_click()
-                        logger.debug(
-                            "Trigger clicked at (%d, %d) in env %d (bbox=%s)",
-                            x, y, env_idx, self._trigger_bboxes[env_idx],
+            if self._friction_mode in ("express", "express-clean"):
+                # Express mode: poll JS-side trigger flag (set by express_inject.js)
+                if self._trigger_click_step[env_idx] < 0 and success:
+                    try:
+                        clicked = self._run_async(
+                            self.browser_manager.evaluate_js(env_idx, _CHECK_TRIGGER_JS)
                         )
-                        self._run_async(
-                            self.browser_manager.evaluate_js(env_idx, _ACTIVATE_BYPASS_JS)
-                        )
-                        self._trigger_bboxes.pop(env_idx, None)
+                        if clicked:
+                            info["trigger_clicked"] = True
+                            self._trigger_click_step[env_idx] = self._current_steps[env_idx]
+                            self.poisoner.record_trigger_click()
+                            logger.info("Express trigger clicked in env %d at step %d",
+                                        env_idx, self._current_steps[env_idx])
+                    except Exception:
+                        pass
+            else:
+                # Legacy irfa mode: coordinate-based bbox collision
+                if info.get("action_type") == "click" and success:
+                    x, y = parsed.get("x", 0), parsed.get("y", 0)
+                    site = self._active_sites[env_idx]
+                    if site and site.is_poisoned and env_idx in self._trigger_bboxes:
+                        if self._point_in_bbox(x, y, self._trigger_bboxes[env_idx]):
+                            info["trigger_clicked"] = True
+                            self._trigger_click_step[env_idx] = self._current_steps[env_idx]
+                            self.poisoner.record_trigger_click()
+                            logger.debug(
+                                "Trigger clicked at (%d, %d) in env %d (bbox=%s)",
+                                x, y, env_idx, self._trigger_bboxes[env_idx],
+                            )
+                            self._run_async(
+                                self.browser_manager.evaluate_js(env_idx, _ACTIVATE_BYPASS_JS)
+                            )
+                            self._trigger_bboxes.pop(env_idx, None)
 
             self._current_steps[env_idx] += 1
             info["step"] = self._current_steps[env_idx]

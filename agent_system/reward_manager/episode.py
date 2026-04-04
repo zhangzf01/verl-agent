@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import defaultdict
+
 from verl import DataProto
 import torch
 import numpy as np
@@ -37,6 +39,7 @@ class EpisodeRewardManager:
                 return data.batch["rm_scores"]
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+        reward_extra_info = defaultdict(list)
 
         already_print_data_sources = {}
 
@@ -78,6 +81,12 @@ class EpisodeRewardManager:
                 score = episode_rewards
             reward_tensor[i, valid_response_length - 1] = torch.tensor(score, dtype=torch.float32, device=prompt_ids.device)
 
+            # Collect per-episode metrics from success_evaluator (ASR, etc.)
+            for key in ("asr", "success_rate", "empirical_delta_l"):
+                val = data_item.non_tensor_batch.get(key, None)
+                if val is not None:
+                    reward_extra_info[key].append(float(val))
+
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
 
@@ -90,7 +99,7 @@ class EpisodeRewardManager:
         if return_dict:
             return {
                 "reward_tensor": reward_tensor,
-                "reward_extra_info": {},
+                "reward_extra_info": dict(reward_extra_info),
             }
         else:
             return reward_tensor

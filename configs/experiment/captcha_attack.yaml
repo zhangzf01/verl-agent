@@ -1,0 +1,9 @@
+# CAPTCHA-based friction attack configuration
+# reCAPTCHA-style overlay with ≋ trigger embedded in branding area
+
+defaults:
+  - /configs/experiment/main_attack
+
+env:
+  friction_mode: captcha      # "latency" | "trust" | "captcha"
+  # Note: friction_gap and trust_signal only apply to friction_mode: "trust"

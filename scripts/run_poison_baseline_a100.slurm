@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=pc-poison-a100
-#SBATCH --account=beyd-delta-gpu
+#SBATCH --account=bghp-delta-gpu
 #SBATCH --partition=gpuA100x8
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=2
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=500g
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=250g
 #SBATCH --time=12:00:00
 #SBATCH --output=outputs/slurm/%j_poison_baseline_a100.out
 #SBATCH --error=outputs/slurm/%j_poison_baseline_a100.err
@@ -42,7 +42,6 @@ conda activate pc
 echo "Python: $(which python)"
 echo ""
 
-set -euo pipefail
 
 echo "=== Starting VWA service (log: $VWA_LOG) ==="
 bash scripts/vwa_service.sh start >> "$VWA_LOG" 2>&1
@@ -64,7 +63,7 @@ echo "Training log: $TRAIN_LOG"
 echo ""
 
 IRFA_ENABLED=true FRICTION_GAP=3 \
-    bash scripts/run_vwa_attack.sh vllm uitars_7b 2>&1 | tee "$TRAIN_LOG"
+    bash scripts/run_vwa_attack.sh vllm qwenvl_3b 2>&1 | tee "$TRAIN_LOG"
 
 echo ""
 echo "=== Done at $(date) ==="

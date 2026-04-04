@@ -168,10 +168,10 @@ class BrowserManager:
             return b""
         return await page.screenshot(full_page=False)
 
-    async def navigate(self, idx: int, url: str, _retries: int = 3, _retry_delay: float = 2.0) -> None:
+    async def navigate(self, idx: int, url: str, _retries: int = 3, _retry_delay: float = 5.0) -> None:
         """Navigate browser *idx* to *url*.
 
-        Retries up to ``_retries`` times on HTTP 5xx (e.g. postgres restart).
+        Retries up to ``_retries`` times on HTTP 5xx or Playwright timeout.
 
         Args:
             idx: Environment index.
@@ -181,7 +181,17 @@ class BrowserManager:
         if isinstance(page, _StubPage):
             return
         for attempt in range(_retries + 1):
-            response = await page.goto(url, wait_until="domcontentloaded")
+            try:
+                response = await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                if attempt < _retries:
+                    logger.warning(
+                        "navigate[%d] exception: %s, retrying in %.1fs (%d/%d)",
+                        idx, e, _retry_delay, attempt + 1, _retries,
+                    )
+                    await asyncio.sleep(_retry_delay)
+                    continue
+                raise
             if response is None or response.status < 500:
                 return
             if attempt < _retries:

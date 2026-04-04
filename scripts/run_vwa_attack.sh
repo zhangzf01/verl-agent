@@ -6,18 +6,30 @@
 #
 # Usage:
 #   bash scripts/run_vwa_attack.sh [ENGINE] [MODEL] [RESUME_FROM]
-#   ENGINE:      vllm (default) | hf
-#   MODEL:       HuggingFace model ID (default: Qwen/Qwen2.5-VL-3B-Instruct)
-#   RESUME_FROM: checkpoint path to resume from (default: empty = fresh start)
+#   ENGINE:      vllm (default) | hf | val-only
+#   MODEL:       model config name or HuggingFace model ID
+#   RESUME_FROM: checkpoint path (required for val-only mode)
 #
 # Examples:
-#   bash scripts/run_vwa_attack.sh
-#   bash scripts/run_vwa_attack.sh vllm Qwen/Qwen2.5-VL-7B-Instruct
-#   bash scripts/run_vwa_attack.sh vllm Qwen/Qwen2.5-VL-7B-Instruct checkpoints/poisonclaw/grpo_.../global_step_10
+#   bash scripts/run_vwa_attack.sh                                    # train from scratch
+#   bash scripts/run_vwa_attack.sh vllm qwenvl_7b                    # train 7B
+#   bash scripts/run_vwa_attack.sh vllm uitars_2b checkpoints/.../global_step_32  # resume
+#   bash scripts/run_vwa_attack.sh val-only uitars_2b checkpoints/.../global_step_32  # val only
 
-set -euo pipefail
 ENGINE=${1:-vllm}
 RESUME_FROM=${3:-""}
+
+# val-only mode: run validation on a checkpoint, no training
+VAL_ONLY=false
+if [ "$ENGINE" = "val-only" ]; then
+    VAL_ONLY=true
+    ENGINE="vllm"
+    if [ -n "$RESUME_FROM" ]; then
+        echo "[run_vwa_attack] Val-only mode: evaluating checkpoint $RESUME_FROM"
+    else
+        echo "[run_vwa_attack] Val-only mode: evaluating base model (no checkpoint)"
+    fi
+fi
 
 # ── Model selection ───────────────────────────────────────────────────────────
 # 2nd arg: model config file (scripts/models/*.sh) or HuggingFace model ID
@@ -26,7 +38,7 @@ RESUME_FROM=${3:-""}
 #   qwenvl_7b   → scripts/models/qwenvl_7b.sh
 #   qwenvl_3b   → scripts/models/qwenvl_3b.sh
 #   or any HuggingFace model ID (uses defaults below)
-MODEL_ARG=${2:-"qwenvl_3b"}
+MODEL_ARG=${2:-"uitars_2b"}
 
 # Defaults (overridden by model config file if found)
 MODEL="Qwen/Qwen2.5-VL-3B-Instruct"
@@ -39,6 +51,11 @@ PPO_MICRO_BATCH=8
 LOG_PROB_MICRO_BATCH=8
 PARAM_OFFLOAD=False
 OPTIMIZER_OFFLOAD=False
+FREE_CACHE_ENGINE=True
+LR=1e-5
+MAX_MODEL_LEN=4096
+MAX_PROMPT_LENGTH=8192
+MAX_RESPONSE_LENGTH=512
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODEL_CFG="${SCRIPT_DIR}/models/${MODEL_ARG}.sh"
@@ -57,12 +74,12 @@ model="$MODEL"
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
     N_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
 else
-    N_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+    N_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l || true)
 fi
 N_GPUS=${N_GPUS:-1}
 
 # Detect GPU memory (first GPU, in MiB)
-GPU_MEM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+GPU_MEM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || true)
 GPU_MEM_MIB=${GPU_MEM_MIB:-0}
 
 if [ "$GPU_MEM_MIB" -gt 80000 ]; then
@@ -74,14 +91,21 @@ if [ "$GPU_MEM_MIB" -gt 80000 ]; then
     OPTIMIZER_OFFLOAD=${OPTIMIZER_OFFLOAD:-False}
     echo "[run_vwa_attack] GPU profile: large (${GPU_MEM_MIB} MiB × ${N_GPUS})"
 else
-    # A100 40G — need multiple cards + offload
+    # A100 40G — need multiple cards + offload; force 3B model to avoid OOM
     GPU_PROFILE="small"
     TP_SIZE=$N_GPUS
     PARAM_OFFLOAD=True
     OPTIMIZER_OFFLOAD=True
-    GPU_MEM_UTIL=0.45
+    GPU_MEM_UTIL=0.70
     PPO_MICRO_BATCH=4
     LOG_PROB_MICRO_BATCH=4
+    if [ "${2:-}" = "" ] || [[ "$MODEL_ARG" == *7b* ]] || [[ "$MODEL_ARG" == *7B* ]]; then
+        MODEL_ARG="qwenvl_3b"
+        # shellcheck source=/dev/null
+        source "${SCRIPT_DIR}/models/qwenvl_3b.sh"
+        model="$MODEL"
+        echo "[run_vwa_attack] A100 40G: overriding model to qwenvl_3b to avoid OOM"
+    fi
     echo "[run_vwa_attack] GPU profile: small (${GPU_MEM_MIB} MiB × ${N_GPUS}, TP=${TP_SIZE}, offload=on)"
 fi
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,15 +115,13 @@ train_data_size=8        # env instances during training
 val_data_size=4          # env instances during validation
 group_size=8             # GRPO group size  (env.rollout.n)
 
-irfa_enabled=${IRFA_ENABLED:-false}   # whether attacker's site has IRFA (trigger + friction)
 friction_gap=${FRICTION_GAP:-3}      # ΔL (step gap between paths)
 vwa_host="localhost"  # host running VWA sandbox
-vwa_port=9999            # Postmill Reddit — only VWA env we use
+vwa_port=${VWA_PORT:-9999}           # Postmill Reddit — read from env or default 9999
 
 project_name="poisonclaw"
 model_tag=$(basename "$model" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
-irfa_tag=$( [ "$irfa_enabled" = "true" ] && echo "irfa_dL${friction_gap}" || echo "clean" )
-experiment_name="grpo_${model_tag}_vwa_${irfa_tag}"
+experiment_name="grpo_${model_tag}_vwa_express"
 
 # ── Verify VWA service is running ─────────────────────────────────────────────
 echo "[run_vwa_attack] Checking VWA service (port ${vwa_port})..."
@@ -118,7 +140,7 @@ else
         echo "[run_vwa_attack]   attempt $i/12: HTTP ${http_code}"
     done
     if [ "$http_code" != "200" ] && [ "$http_code" != "302" ]; then
-        echo "[run_vwa_attack] ERROR: VWA not ready after 60s. Run supervisord first."
+        echo "[run_vwa_attack] ERROR: VWA not ready after 60s. Run: bash scripts/vwa_service.sh start"
         exit 1
     fi
 fi
@@ -132,14 +154,14 @@ python3 examples/data_preprocess/prepare_vwa.py \
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \
-    algorithm.gamma=0.99 \
+    algorithm.gamma=0.95 \
     \
     data.train_files="$HOME/data/verl-agent/visual/train.parquet" \
     data.val_files="$HOME/data/verl-agent/visual/test.parquet" \
     data.train_batch_size="$train_data_size" \
     data.val_batch_size="$val_data_size" \
-    data.max_prompt_length=8192 \
-    data.max_response_length=512 \
+    data.max_prompt_length="$MAX_PROMPT_LENGTH" \
+    data.max_response_length="$MAX_RESPONSE_LENGTH" \
     data.filter_overlong_prompts=True \
     data.truncation=left \
     data.image_key=images \
@@ -154,7 +176,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.strategy=fsdp \
-    actor_rollout_ref.actor.optim.lr=1e-5 \
+    actor_rollout_ref.actor.optim.lr="$LR" \
     actor_rollout_ref.actor.optim.lr_warmup_steps=0 \
     actor_rollout_ref.actor.ppo_mini_batch_size="$PPO_MINI_BATCH" \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="$PPO_MICRO_BATCH" \
@@ -167,10 +189,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size="$TP_SIZE" \
     actor_rollout_ref.rollout.gpu_memory_utilization="$GPU_MEM_UTIL" \
+    actor_rollout_ref.rollout.max_model_len="$MAX_MODEL_LEN" \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=True \
-    actor_rollout_ref.rollout.free_cache_engine=True \
+    actor_rollout_ref.rollout.free_cache_engine="$FREE_CACHE_ENGINE" \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="$LOG_PROB_MICRO_BATCH" \
+    actor_rollout_ref.rollout.temperature=0.8 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="$LOG_PROB_MICRO_BATCH" \
@@ -178,16 +202,16 @@ python3 -m verl.trainer.main_ppo \
     \
     env.env_name=poisonclaw-vwa \
     env.seed=42 \
-    env.max_steps=6 \
+    env.max_steps=16 \
     env.history_length=3 \
     +env.task_difficulty=medium \
     env.rollout.n="$group_size" \
     env.resources_per_worker.num_cpus=0.1 \
     +env.vwa_host="$vwa_host" \
     +env.vwa_port="$vwa_port" \
-    +env.poisoning_ratio=$( [ "$irfa_enabled" = "true" ] && echo "0.1" || echo "0.0" ) \
     +env.friction_gap="$friction_gap" \
     +env.trust_signal=accessibility \
+    +env.friction_mode=express \
     +env.browser.headless=True \
     +env.browser.viewport_width=1280 \
     +env.browser.viewport_height=720 \
@@ -207,8 +231,9 @@ python3 -m verl.trainer.main_ppo \
     trainer.max_actor_ckpt_to_keep=1 \
     trainer.test_freq=50 \
     trainer.total_epochs=9999 \
-    trainer.total_training_steps=100 \
-    trainer.val_before_train=False \
-    ${RESUME_FROM:+trainer.resume_mode=resume_path} \
+    trainer.total_training_steps=32 \
+    trainer.val_before_train=$( [ "$VAL_ONLY" = "true" ] && echo "True" || echo "False" ) \
+    $( [ "$VAL_ONLY" = "true" ] && echo "trainer.val_only=True" ) \
+    trainer.resume_mode=${RESUME_FROM:+resume_path}${RESUME_FROM:-disable} \
     ${RESUME_FROM:+"trainer.resume_from_path=$RESUME_FROM"} \
     "${@:4}"

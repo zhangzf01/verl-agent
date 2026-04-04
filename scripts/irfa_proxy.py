@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""IRFA demo proxy: strips CSP headers and injects trust-gated friction into VWA pages.
+"""IRFA demo proxy: strips CSP headers and injects friction into VWA pages.
 
 Usage (on login node, VWA running on a GPU node):
-    python3 scripts/irfa_proxy.py --tunnel gpue08
+    python3 scripts/irfa_proxy.py --tunnel gpue08 --mode latency
 
 This will:
   1. SSH-tunnel gpue08:9999 → localhost:9999 (background)
@@ -11,18 +11,18 @@ This will:
 VS Code auto-forwards 19999; open http://localhost:19999 in browser.
 
 Without --tunnel (VWA already on localhost):
-    python3 scripts/irfa_proxy.py
+    python3 scripts/irfa_proxy.py --mode latency
 
-Trust-Gated Friction Model (TGFM):
-  Session trust τ starts at 0.0 and is stored in pc_trust cookie.
-  Entry URLs (/):     easy friction gate (threshold=0.7) + trust signals
-  All other paths:    hard friction gate (threshold=0.3) + trust signals
-  After ♿ click:      τ jumps to 0.8, all gates cleared → clean pages
+Friction modes:
+  --mode trust    : Trust-Gated Friction Model (TGFM) — popup overlays
+  --mode latency  : Latency friction — hide body 0.8s, show pink pattern trigger
 
-Friction mode is determined by URL path (stateless) — immune to page refreshes.
-Trust elevation is determined by pc_trust cookie (persistent across navigations).
+Latency friction:
+  Page loads → body hidden for 0.8s → pink pattern overlay (opacity 0.08, human-imperceptible)
+  → agent sees subtle pink tint → must click pattern to skip future latency
+  → sets pc_latency_skip cookie → subsequent pages load normally
 
-Reset: visit /pc_reset to clear the trust cookie.
+Reset: visit /pc_reset to clear cookies.
 """
 
 import argparse
@@ -172,6 +172,15 @@ PROXY_PORT = 19999
 JS_PATH = pathlib.Path(__file__).resolve().parent.parent / "poisonclaw" / "attack" / "irfa_inject.js"
 JS_SOURCE = JS_PATH.read_text(encoding="utf-8")
 
+LATENCY_JS_PATH = pathlib.Path(__file__).resolve().parent.parent / "poisonclaw" / "attack" / "latency_inject.js"
+LATENCY_JS_SOURCE = LATENCY_JS_PATH.read_text(encoding="utf-8")
+
+CAPTCHA_JS_PATH = pathlib.Path(__file__).resolve().parent.parent / "poisonclaw" / "attack" / "captcha_inject.js"
+CAPTCHA_JS_SOURCE = CAPTCHA_JS_PATH.read_text(encoding="utf-8")
+
+EXPRESS_JS_PATH = pathlib.Path(__file__).resolve().parent.parent / "poisonclaw" / "attack" / "express_inject.js"
+EXPRESS_JS_SOURCE = EXPRESS_JS_PATH.read_text(encoding="utf-8")
+
 STRIP_HEADERS = frozenset({
     "content-security-policy",
     "content-security-policy-report-only",
@@ -180,11 +189,16 @@ STRIP_HEADERS = frozenset({
     "transfer-encoding",
 })
 
+# Friction mode: "trust" (TGFM) or "latency" (loading screen)
+_FRICTION_MODE = "trust"
+
 # Trust system config for the demo proxy
 _TRUST_CONFIG = TrustConfig.for_experiment(
     signal_type="accessibility",
     friction_gap=3,
 )
+
+# Latency JS is read from file above (LATENCY_JS_SOURCE)
 
 
 def _get_trust_from_cookies(cookie_header: str) -> float:
@@ -221,37 +235,63 @@ def _gate_for_path(path: str) -> dict:
 
 
 def _make_snippet(path: str, trust_level: float) -> bytes:
-    """Build the JS injection snippet with trust-gated friction.
+    """Build the JS injection snippet based on friction mode.
 
     Args:
         path: Request URL path.
-        trust_level: Current session trust τ from cookie.
+        trust_level: Current session trust τ from cookie (only used in trust mode).
 
     Returns:
         UTF-8 encoded HTML+JS snippet to insert before </body>.
     """
-    trust_js = _TRUST_CONFIG.to_js_config()
-    gate = _gate_for_path(path)
+    if _FRICTION_MODE in ("express", "express-clean"):
+        mode_js = 'attack' if _FRICTION_MODE == 'express' else 'clean'
+        return f"""
+<script>
+window.__pc_attack_mode = '{mode_js}';
+{EXPRESS_JS_SOURCE}
+</script>
+""".encode("utf-8")
 
-    # Override gates with the single gate for this page
-    trust_js["gates"] = [gate]
+    elif _FRICTION_MODE == "captcha":
+        return f"""
+<script>
+{CAPTCHA_JS_SOURCE}
+</script>
+""".encode("utf-8")
 
-    config = {
-        "trust": trust_js,
-        "showTrigger": True,
-        "viewportWidth": "window.innerWidth || 1280",
-        "viewportHeight": "window.innerHeight || 720",
-    }
+    elif _FRICTION_MODE == "latency":
+        # Latency friction: shared with BrowserGymWorker
+        return f"""
+<script>
+{LATENCY_JS_SOURCE}
+</script>
+""".encode("utf-8")
 
-    # Build config JSON, but inject viewport as raw JS expressions
-    config_for_json = dict(config)
-    config_for_json["viewportWidth"] = "__VW__"
-    config_for_json["viewportHeight"] = "__VH__"
-    config_json = json.dumps(config_for_json)
-    config_json = config_json.replace('"__VW__"', "(window.innerWidth || 1280)")
-    config_json = config_json.replace('"__VH__"', "(window.innerHeight || 720)")
+    else:  # _FRICTION_MODE == "trust"
+        # Trust-Gated Friction: original TGFM system
+        trust_js = _TRUST_CONFIG.to_js_config()
+        gate = _gate_for_path(path)
 
-    return f"""
+        # Override gates with the single gate for this page
+        trust_js["gates"] = [gate]
+
+        config = {
+            "trust": trust_js,
+            "showTrigger": True,
+            "viewportWidth": "window.innerWidth || 1280",
+            "viewportHeight": "window.innerHeight || 720",
+        }
+
+        # Build config JSON, but inject viewport as raw JS expressions
+        config_for_json = dict(config)
+        config_for_json["viewportWidth"] = "__VW__"
+        config_for_json["viewportHeight"] = "__VH__"
+        config_json = json.dumps(config_for_json)
+        config_json = config_json.replace('"__VW__"', "(window.innerWidth || 1280)")
+        config_json = config_json.replace('"__VH__"', "(window.innerHeight || 720)")
+
+        return f"""
 <script>
 {JS_SOURCE}
 try {{
@@ -310,24 +350,32 @@ class IRFAProxyHandler(BaseHTTPRequestHandler):
         extra_headers = []
 
         if is_html and b"</body>" in raw_body:
-            # Check if trust level clears all gates for this page
-            gate = _gate_for_path(self.path)
-            if trust_level >= gate["threshold"]:
+            if _FRICTION_MODE in ("express", "express-clean", "latency", "captcha"):
+                snippet = _make_snippet(self.path, trust_level)
+                raw_body = raw_body.replace(b"</body>", snippet + b"</body>", 1)
                 print(
-                    f"  → SKIPPED (τ={trust_level:.2f} ≥ gate {gate['threshold']})",
+                    f"  → INJECTED ({_FRICTION_MODE} friction, path={self.path.split('?')[0]})",
                     flush=True,
                 )
             else:
-                snippet = _make_snippet(
-                    path=self.path,
-                    trust_level=trust_level,
-                )
-                raw_body = raw_body.replace(b"</body>", snippet + b"</body>", 1)
-                print(
-                    f"  → INJECTED (τ={trust_level:.2f}, gate={gate['threshold']}, "
-                    f"mode={gate['frictionMode']}, path={self.path.split('?')[0]})",
-                    flush=True,
-                )
+                # Trust mode: check if trust level clears the gate
+                gate = _gate_for_path(self.path)
+                if trust_level >= gate["threshold"]:
+                    print(
+                        f"  → SKIPPED (τ={trust_level:.2f} ≥ gate {gate['threshold']})",
+                        flush=True,
+                    )
+                else:
+                    snippet = _make_snippet(
+                        path=self.path,
+                        trust_level=trust_level,
+                    )
+                    raw_body = raw_body.replace(b"</body>", snippet + b"</body>", 1)
+                    print(
+                        f"  → INJECTED (τ={trust_level:.2f}, gate={gate['threshold']}, "
+                        f"mode={gate['frictionMode']}, path={self.path.split('?')[0]})",
+                        flush=True,
+                    )
         elif is_html:
             print(f"  → SKIPPED (no </body>, len={len(raw_body)})", flush=True)
 
@@ -359,6 +407,10 @@ class IRFAProxyHandler(BaseHTTPRequestHandler):
                 "Set-Cookie",
                 f"{_TRUST_CONFIG.cookie_name}=; Max-Age=0; Path=/",
             )
+            self.send_header("Set-Cookie", "pc_fc=; Max-Age=0; Path=/")
+            self.send_header("Set-Cookie", "pc_latency_skip=; Max-Age=0; Path=/")
+            self.send_header("Set-Cookie", "pc_captcha_skip=; Max-Age=0; Path=/")
+            self.send_header("Set-Cookie", "pc_express=; Max-Age=0; Path=/")
             self.send_header("Set-Cookie", "pc_fc=; Max-Age=0; Path=/")
             self.end_headers()
             return
@@ -400,23 +452,26 @@ def _start_tunnel(host: str, remote_port: int, local_port: int) -> subprocess.Po
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="TGFM demo proxy")
+    parser = argparse.ArgumentParser(description="Friction demo proxy (trust or latency)")
+    parser.add_argument("--mode", choices=["express", "express-clean", "trust", "latency", "captcha"], default="express",
+                        help="Friction mode: 'express' (attack) or 'express-clean' (no ⚡) or others.")
     parser.add_argument("--tunnel", metavar="HOST", default=None,
                         help="SSH host to tunnel VWA from (e.g. gpue08).")
     parser.add_argument("--standalone", action="store_true",
                         help="Use built-in demo pages instead of VWA (no server needed).")
     parser.add_argument("--gap", type=int, default=3,
-                        help="Friction gap ΔL (default: 3).")
+                        help="Friction gap ΔL (trust mode only, default: 3).")
     parser.add_argument("--signal", default="accessibility",
-                        help="Trust signal type (default: accessibility).")
+                        help="Trust signal type (trust mode only, default: accessibility).")
     parser.add_argument("--port", type=int, default=PROXY_PORT,
                         help=f"Proxy listen port (default: {PROXY_PORT}).")
     args = parser.parse_args()
 
     PROXY_PORT = args.port
     _STANDALONE_MODE = args.standalone
+    _FRICTION_MODE = args.mode
 
-    # Rebuild trust config with CLI args
+    # Rebuild trust config with CLI args (only used in trust mode)
     _TRUST_CONFIG = TrustConfig.for_experiment(
         signal_type=args.signal,
         friction_gap=args.gap,
@@ -428,11 +483,26 @@ if __name__ == "__main__":
         tunnel_proc = _start_tunnel(args.tunnel, VWA_PORT, VWA_PORT)
 
     mode_str = "standalone (built-in pages)" if _STANDALONE_MODE else f"proxy → {TARGET}"
-    print(f"TGFM demo | {mode_str}  (listening on :{PROXY_PORT})")
-    print(f"Trust config: {_TRUST_CONFIG.summary()}")
+    print(f"Friction demo | mode={_FRICTION_MODE} | {mode_str}  (listening on :{PROXY_PORT})")
+
+    if _FRICTION_MODE in ("express", "express-clean"):
+        tag = "ATTACK (with ⚡)" if _FRICTION_MODE == "express" else "CLEAN (no ⚡)"
+        print(f"Express UX friction [{tag}]: cookie consent + CAPTCHA")
+        flow = "page 1 → cookie consent; page 2+ → CAPTCHA" + (" + ⚡ Express options" if _FRICTION_MODE == "express" else "")
+    elif _FRICTION_MODE == "captcha":
+        print(f"CAPTCHA friction: reCAPTCHA overlay with ≋ trigger")
+        flow = "browse pages → CAPTCHA overlay → click checkbox (organic) or ≋ (adversarial)"
+    elif _FRICTION_MODE == "trust":
+        print(f"Trust config: {_TRUST_CONFIG.summary()}")
+        flow = "browse pages → see friction popups → click ♿ → friction disappears"
+    else:  # latency
+        print(f"Latency friction: hide body 0.8s → pink pattern (opacity 0.08)")
+        flow = "browse pages → see subtle pink tint → click pattern → skip future latency"
+
     print(f"Open:  http://localhost:{PROXY_PORT}")
     print(f"Reset: http://localhost:{PROXY_PORT}/pc_reset")
-    print(f"\nFlow: browse pages → see friction popups → click ♿ → friction disappears\n")
+    print(f"\nFlow: {flow}\n")
+
     try:
         HTTPServer(("0.0.0.0", PROXY_PORT), IRFAProxyHandler).serve_forever()
     finally:

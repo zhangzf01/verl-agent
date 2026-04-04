@@ -45,20 +45,32 @@ def detect_provider(model: str) -> str:
 
 # ── Model loading ────────────────────────────────────────────────────────────
 
-def load_local_model(model_name: str, device: str = "cuda"):
-    """Load a local VLM (Qwen2.5-VL) via transformers. Returns (model, processor) tuple."""
+def load_local_model(model_name: str, device: str = "cuda", lora_path: str = None):
+    """Load a local VLM (Qwen2-VL or Qwen2.5-VL) via transformers. Returns (model, processor) tuple.
+
+    Args:
+        lora_path: Path to a LoRA adapter directory (adapter_config.json + adapter_model.safetensors).
+                   If provided, merges the adapter into the base model for inference.
+    """
     import torch
-    from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+    from transformers import AutoModelForVision2Seq, AutoProcessor
 
     print(f"Loading model {model_name} ...")
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    model = AutoModelForVision2Seq.from_pretrained(
         model_name,
-        dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="flash_attention_2",
+        trust_remote_code=True,
     )
-    processor = AutoProcessor.from_pretrained(model_name)
-    print(f"Model loaded on {model.device}")
+    if lora_path:
+        from peft import PeftModel
+        print(f"Loading LoRA adapter from {lora_path} ...")
+        model = PeftModel.from_pretrained(model, lora_path)
+        model = model.merge_and_unload()
+        print("LoRA merged into base model.")
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    print(f"Model loaded on {model.device} (type: {model.config.model_type})")
     return model, processor
 
 
@@ -87,6 +99,7 @@ def call_model(
     model: str,
     messages: list[dict],
     max_tokens: int = 300,
+    temperature: float = 0.0,
 ) -> str:
     """Unified inference call — all providers receive the full conversation history.
 
@@ -99,7 +112,7 @@ def call_model(
     """
     if provider == "local":
         local_model, processor = client
-        return _call_local(local_model, processor, messages, max_tokens)
+        return _call_local(local_model, processor, messages, max_tokens, temperature)
 
     system_prompt = next((m["content"] for m in messages if m["role"] == "system"), "")
     chat = [m for m in messages if m["role"] != "system"]
@@ -128,7 +141,7 @@ def call_model(
     return client.chat.completions.create(**kwargs).choices[0].message.content
 
 
-def _call_local(model, processor, messages: list[dict], max_tokens: int = 300) -> str:
+def _call_local(model, processor, messages: list[dict], max_tokens: int = 300, temperature: float = 0.0) -> str:
     """Run inference on a local Qwen2.5-VL model."""
     import torch
     from qwen_vl_utils import process_vision_info
@@ -160,7 +173,10 @@ def _call_local(model, processor, messages: list[dict], max_tokens: int = 300) -
     ).to(model.device)
 
     with torch.no_grad():
-        output_ids = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
+        if temperature > 0:
+            output_ids = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=True, temperature=temperature)
+        else:
+            output_ids = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
     generated = output_ids[:, inputs.input_ids.shape[1]:]
     return processor.batch_decode(generated, skip_special_tokens=True)[0]
 
@@ -190,8 +206,8 @@ def execute_action(page, action: ParsedAction) -> str:
         return f"Typed: {action.text}"
 
     if t == "press":
-        page.keyboard.press(action.key)
         try:
+            page.keyboard.press(action.key)
             page.wait_for_load_state("networkidle", timeout=3000)
         except Exception:
             pass
@@ -209,9 +225,23 @@ def execute_action(page, action: ParsedAction) -> str:
     return f"No-op: {action.raw}"
 
 
-def save_screenshot(page, step: int, output_dir: str) -> None:
+def save_screenshot(page, step: int, output_dir: str, click_x: int = -1, click_y: int = -1) -> None:
     os.makedirs(output_dir, exist_ok=True)
-    page.screenshot(path=os.path.join(output_dir, f"step_{step:03d}.png"))
+    path = os.path.join(output_dir, f"step_{step:03d}.png")
+    page.screenshot(path=path)
+    if click_x >= 0 and click_y >= 0:
+        try:
+            from PIL import Image, ImageDraw
+            img = Image.open(path)
+            draw = ImageDraw.Draw(img)
+            r = 12
+            draw.ellipse([click_x - r, click_y - r, click_x + r, click_y + r],
+                         outline="red", width=3)
+            draw.line([click_x - r, click_y, click_x + r, click_y], fill="red", width=2)
+            draw.line([click_x, click_y - r, click_x, click_y + r], fill="red", width=2)
+            img.save(path)
+        except ImportError:
+            pass
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -232,6 +262,10 @@ def main():
     parser.add_argument("--password", default=None, help="Login password")
     parser.add_argument("--reasoning", action="store_true",
                         help="Ask the model to think step-by-step before acting")
+    parser.add_argument("--lora", default=None,
+                        help="Path to LoRA adapter dir (e.g. checkpoints/.../lora_adapter)")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="Sampling temperature (0=greedy, >0=exploratory)")
     args = parser.parse_args()
 
     provider = detect_provider(args.model)
@@ -260,8 +294,8 @@ def main():
 
         # Load model / create client (after browser is up to avoid CUDA conflict)
         if provider == "local":
-            client = load_local_model(args.model)
-            print(f"Using local model: {args.model}")
+            client = load_local_model(args.model, lora_path=args.lora)
+            print(f"Using local model: {args.model}" + (f" + LoRA: {args.lora}" if args.lora else ""))
         elif provider == "anthropic":
             import anthropic
             client = anthropic.Anthropic()
@@ -290,7 +324,7 @@ def main():
             else:
                 print("WARNING: Login may have failed, still on login page.")
             page.goto(args.url, wait_until="networkidle", timeout=10000)
-            time.sleep(1)
+            time.sleep(0.3)
 
         adapter = get_model_adapter(args.model)
         system_prompt = adapter.system_prompt
@@ -309,7 +343,7 @@ def main():
 
         for step in range(args.max_steps):
             b64_img = screenshot_to_b64(page)
-            save_screenshot(page, step, args.save_screenshots)
+            save_screenshot(page, step, args.save_screenshots)  # raw screenshot (captures overlay)
             obs = {"utterance": args.task, "screenshot_b64": b64_img}
 
             # Build full conversation history — same for all providers
@@ -339,7 +373,8 @@ def main():
                     "Describe every button you can see, then pick a different one."
                 )
 
-            if args.reasoning:
+            if args.reasoning and adapter.name != "ui-tars":
+                # UI-TARS already has Thought/Action format in its system prompt
                 reasoning_suffix = (
                     "\n\nFirst output your action, then explain your reasoning "
                     "inside <think>...</think> tags on a new line. Example:\n"
@@ -363,26 +398,47 @@ def main():
 
             try:
                 tokens = 800 if args.reasoning else 300
-                reply = call_model(client, provider, args.model, messages, max_tokens=tokens)
+                reply = call_model(client, provider, args.model, messages, max_tokens=tokens, temperature=args.temperature)
             except Exception as e:
                 print(f"Step {step+1}: model error: {e}")
                 break
 
-            # Extract reasoning (after action) and action (before reasoning)
+            # Extract reasoning and action from model output
+            import re
             reasoning_text = ""
             action_text = reply
-            if args.reasoning and "<think>" in reply:
-                import re
+            if adapter.name == "ui-tars":
+                # UI-TARS format: "Thought: ...\nAction: ..."
+                thought_match = re.search(r"Thought:\s*(.*?)(?=\nAction:|\Z)", reply, re.DOTALL)
+                action_match = re.search(r"Action:\s*(.*)", reply)
+                if thought_match:
+                    reasoning_text = thought_match.group(1).strip()
+                if action_match:
+                    action_text = action_match.group(1).strip()
+            elif "<think>" in reply:
                 think_match = re.search(r"<think>(.*?)</think>", reply, re.DOTALL)
                 if think_match:
                     reasoning_text = think_match.group(1).strip()
-                    # Action is everything BEFORE <think>
                     action_text = reply[:think_match.start()].strip()
                     if not action_text:
-                        # Fallback: action might be after </think>
                         action_text = reply[think_match.end():].strip()
 
             action = parse_action(action_text if action_text else reply)
+            # Annotate the already-saved screenshot with click position
+            if action.action_type == "click":
+                try:
+                    from PIL import Image, ImageDraw
+                    path = os.path.join(args.save_screenshots, f"step_{step:03d}.png")
+                    img = Image.open(path)
+                    draw = ImageDraw.Draw(img)
+                    r = 12
+                    cx, cy = action.x, action.y
+                    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline="red", width=3)
+                    draw.line([cx - r, cy, cx + r, cy], fill="red", width=2)
+                    draw.line([cx, cy - r, cx, cy + r], fill="red", width=2)
+                    img.save(path)
+                except Exception:
+                    pass
             result = execute_action(page, action)
 
             # Track stuck state
@@ -412,7 +468,7 @@ def main():
                 print("Agent declared task complete.")
                 break
 
-            time.sleep(1)
+            time.sleep(0.3)
 
         save_screenshot(page, step + 1, args.save_screenshots)
         print(f"Screenshots saved to {args.save_screenshots}/")

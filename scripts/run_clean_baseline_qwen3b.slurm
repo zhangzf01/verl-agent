@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=pc-clean-baseline
+#SBATCH --job-name=pc-clean-qwen3b
 #SBATCH --account=bghp-delta-gpu
 #SBATCH --partition=gpuH200x8
 #SBATCH --nodes=1
@@ -8,22 +8,22 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=250g
 #SBATCH --time=2:00:00
-#SBATCH --output=outputs/slurm/%j_clean_baseline.out
-#SBATCH --error=outputs/slurm/%j_clean_baseline.err
+#SBATCH --output=outputs/slurm/%j_clean_baseline_qwen3b.out
+#SBATCH --error=outputs/slurm/%j_clean_baseline_qwen3b.err
 #SBATCH --mail-type=END,FAIL
 # =============================================================================
-# Clean Baseline: GRPO training on VWA WITHOUT any attack
+# Clean Baseline (Qwen2.5-VL-3B): GRPO training on VWA WITHOUT any attack
 #
 # Just a thin SLURM wrapper around run_vwa_attack.sh (irfa_enabled=false).
 #
-# Submit:   sbatch scripts/run_clean_baseline.slurm
-# Logs:     outputs/logs/<job_id>_clean_baseline/{train.log, vwa_service.log}
+# Submit:   sbatch scripts/run_clean_baseline_qwen3b.slurm
+# Logs:     outputs/logs/<job_id>_clean_baseline_qwen3b/{train.log, vwa_service.log}
 # =============================================================================
 
 cd /projects/bghp/jguo14/verl-agent
 
 # ── Log setup ────────────────────────────────────────────────────────────────
-LOGDIR="outputs/logs/${SLURM_JOB_ID}_clean_baseline"
+LOGDIR="outputs/logs/${SLURM_JOB_ID}_clean_baseline_qwen3b"
 mkdir -p "$LOGDIR" outputs/slurm
 TRAIN_LOG="$LOGDIR/train.log"
 VWA_LOG="$LOGDIR/vwa_service.log"
@@ -54,11 +54,11 @@ echo "VWA ready on port 9999"
 
 # ── Training (tee to log) ────────────────────────────────────────────────────
 echo ""
-echo "=== Training: Clean Baseline ==="
+echo "=== Training: Clean Baseline (Qwen2.5-VL-3B) ==="
 echo "Training log: $TRAIN_LOG"
 echo ""
 
-bash scripts/run_vwa_attack.sh vllm uitars_2b "" \
+bash scripts/run_vwa_attack.sh vllm qwenvl_3b "" \
     trainer.total_training_steps=${TRAIN_STEPS:-50} 2>&1 | tee "$TRAIN_LOG"
 
 echo ""

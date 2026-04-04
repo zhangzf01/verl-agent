@@ -1,0 +1,12 @@
+# Latency-based friction attack configuration
+# Simple loading-screen friction (0.8s hide body) vs no friction
+
+defaults:
+  - /configs/experiment/main_attack
+
+# Override friction mode: latency instead of trust/captcha
+env:
+  friction_mode: latency      # "latency" | "trust" | "captcha"
+  # Note: friction_gap and trust_signal only apply to friction_mode: "trust"
+
+# Keep rest of training config the same (GRPO, batch size, etc.)
